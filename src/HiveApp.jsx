@@ -266,28 +266,6 @@ export default function App() {
     document.body.removeChild(textArea);
   };
 
-  // Mock Players Joining in Waiting Room (Only visually adds if hosting live game)
-  useEffect(() => {
-    if (gameState === 'waitingRoom' && viewMode === 'host') {
-      let index = 0;
-      const interval = setInterval(() => {
-        if (index < MOCK_USERS.length) {
-          const newPlayer = MOCK_USERS[index];
-          setPlayers(prev => {
-            if (!prev.includes(newPlayer)) {
-              addLog(`@${newPlayer} joined the room.`);
-              return [...prev, newPlayer];
-            }
-            return prev;
-          });
-          index++;
-        }
-      }, 2000); 
-      
-      return () => clearInterval(interval);
-    }
-  }, [gameState, viewMode]);
-
   // Timer Countdown
   useEffect(() => {
     let timer;
