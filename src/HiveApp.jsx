@@ -4,7 +4,7 @@ import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, X
 
 // --- DATABASE CONNECTION ---
 const SUPABASE_URL = 'https://akpagofwnhzaophvdcba.supabase.co';
-const SUPABASE_ANON_KEY = 'PASTE_YOUR_ANON_KEY_HERE'; 
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrcGFnb2Z3bmh6YW9waHZkY2JhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM1OTUzODIsImV4cCI6MjA4OTE3MTM4Mn0.lzg2PBUg4TxOU-lDH7ZhSmnptqOTHAUoz1RutCTq6Ig'; 
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
