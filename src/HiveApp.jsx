@@ -19,14 +19,11 @@ const ICONS = [Triangle, Hexagon, Circle, Square];
 const COLORS = ["bg-rose-500", "bg-cyan-500", "bg-amber-500", "bg-emerald-500"];
 
 export default function App() {
-  // App State
   const [gameState, setGameState] = useState('dashboard'); 
   const [viewMode, setViewMode] = useState('player'); 
   const [username, setUsername] = useState('');
   const [gameId, setGameId] = useState('');
   const [players, setPlayers] = useState([]);
-  
-  // Game Logic State
   const [currentQIndex, setCurrentQIndex] = useState(0);
   const [timeLeft, setTimeLeft] = useState(15);
   const [selectedAnswer, setSelectedAnswer] = useState(null);
@@ -34,11 +31,9 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(true);
 
   // --- REAL-TIME SYNC ---
-
   useEffect(() => {
     if (!gameId) return;
 
-    // Listen for Host Actions (Start, Next Question, etc)
     const roomSub = supabase
       .channel('room-logic')
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: `pin=eq.${gameId}` }, 
@@ -53,10 +48,11 @@ export default function App() {
       })
       .subscribe();
 
-    // Listen for Players Joining
     const playerSub = supabase
       .channel('player-list')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'players', filter: `game_pin=eq.${gameId}` }, 
+      () => fetchPlayers())
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'players', filter: `game_pin=eq.${gameId}` }, 
       () => fetchPlayers())
       .subscribe();
 
@@ -66,13 +62,28 @@ export default function App() {
     };
   }, [gameId]);
 
+  // --- TIMER LOGIC (HOST ONLY) ---
+  useEffect(() => {
+    let timer;
+    if (gameState === 'playing' && timeLeft > 0 && viewMode === 'host') {
+      timer = setInterval(() => {
+        setTimeLeft(prev => prev - 1);
+      }, 1000);
+    } else if (timeLeft === 0 && gameState === 'playing' && viewMode === 'host') {
+      revealAnswer();
+    }
+    return () => clearInterval(timer);
+  }, [gameState, timeLeft, viewMode]);
+
   const fetchPlayers = async () => {
-    const { data } = await supabase.from('players').select('username').eq('game_pin', gameId);
-    if (data) setPlayers(data.map(p => p.username));
+    const { data } = await supabase.from('players')
+      .select('username, score')
+      .eq('game_pin', gameId)
+      .order('score', { ascending: false });
+    if (data) setPlayers(data);
   };
 
   // --- HANDLERS ---
-
   const handleHost = async () => {
     const pin = Math.floor(100000 + Math.random() * 900000).toString();
     const { error } = await supabase.from('rooms').insert([{ pin, status: 'waitingRoom', current_question: 0 }]);
@@ -97,10 +108,39 @@ export default function App() {
   };
 
   const startTrivia = async () => {
-    await supabase.from('rooms').update({ status: 'playing' }).eq('pin', gameId);
+    await supabase.from('rooms').update({ status: 'playing', current_question: 0 }).eq('pin', gameId);
   };
 
-  // --- RENDER DASHBOARD ---
+  const revealAnswer = async () => {
+    await supabase.from('rooms').update({ status: 'revealing' }).eq('pin', gameId);
+  };
+
+  const nextQuestion = async () => {
+    if (currentQIndex < QUESTIONS.length - 1) {
+      await supabase.from('rooms').update({ 
+        status: 'playing', 
+        current_question: currentQIndex + 1 
+      }).eq('pin', gameId);
+    } else {
+      await supabase.from('rooms').update({ status: 'leaderboard' }).eq('pin', gameId);
+    }
+  };
+
+  const submitAnswer = async (index) => {
+    if (selectedAnswer !== null || gameState !== 'playing') return;
+    
+    setSelectedAnswer(index);
+    if (index === QUESTIONS[currentQIndex].correct) {
+      const newScore = score + (timeLeft * 10);
+      setScore(newScore);
+      await supabase.from('players')
+        .update({ score: newScore })
+        .eq('game_pin', gameId)
+        .eq('username', username);
+    }
+  };
+
+  // --- RENDERS ---
   if (gameState === 'dashboard') {
     return (
       <div className={isDarkMode ? "dark" : ""}>
@@ -129,7 +169,6 @@ export default function App() {
     );
   }
 
-  // --- RENDER WAITING ROOM ---
   if (gameState === 'waitingRoom') {
     return (
       <div className="min-h-screen bg-slate-900 flex flex-col items-center p-10 text-white">
@@ -138,7 +177,7 @@ export default function App() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full max-w-4xl">
           {players.map((p, i) => (
             <div key={i} className="bg-zinc-800 p-6 rounded-2xl text-center font-bold border border-white/5 animate-bounce">
-              @{p}
+              @{p.username}
             </div>
           ))}
         </div>
@@ -151,7 +190,6 @@ export default function App() {
     );
   }
 
-  // --- RENDER PLAYING ---
   if (gameState === 'playing' || gameState === 'revealing') {
     const q = QUESTIONS[currentQIndex];
     return (
@@ -163,25 +201,61 @@ export default function App() {
         
         <div className="mb-16 text-center max-w-4xl">
           <h2 className="text-4xl sm:text-6xl font-black leading-tight">
-            {viewMode === 'host' ? q.text : "Check the Host Screen!"}
+            {viewMode === 'host' || gameState === 'revealing' ? q.text : "Select your answer!"}
           </h2>
         </div>
 
         <div className="grid grid-cols-2 gap-6 w-full max-w-5xl">
           {q.options.map((opt, i) => {
             const Icon = ICONS[i];
+            const isCorrect = i === q.correct;
+            const showCorrect = gameState === 'revealing' && isCorrect;
+            const showWrong = gameState === 'revealing' && selectedAnswer === i && !isCorrect;
+
             return (
               <button 
                 key={i}
-                onClick={() => setSelectedAnswer(i)}
-                className={`${COLORS[i]} p-10 sm:p-20 rounded-3xl flex flex-col items-center justify-center transition-all ${selectedAnswer === i ? 'ring-8 ring-white scale-105' : 'opacity-80'}`}
+                disabled={gameState === 'revealing' || selectedAnswer !== null}
+                onClick={() => submitAnswer(i)}
+                className={`${COLORS[i]} p-10 sm:p-20 rounded-3xl flex flex-col items-center justify-center transition-all 
+                  ${selectedAnswer === i ? 'ring-8 ring-white scale-105' : 'opacity-80'} 
+                  ${gameState === 'revealing' && !isCorrect ? 'grayscale opacity-30' : ''}
+                  ${showCorrect ? 'ring-8 ring-emerald-400 scale-110 grayscale-0 opacity-100' : ''}`}
               >
-                <Icon size={viewMode === 'host' ? 40 : 80} fill="currentColor" className="mb-4" />
-                {viewMode === 'host' && <span className="text-2xl font-bold">{opt}</span>}
+                <Icon size={viewMode === 'host' || gameState === 'revealing' ? 40 : 80} fill="currentColor" className="mb-4" />
+                {(viewMode === 'host' || gameState === 'revealing') && <span className="text-2xl font-bold">{opt}</span>}
               </button>
             )
           })}
         </div>
+
+        {viewMode === 'host' && gameState === 'revealing' && (
+          <button onClick={nextQuestion} className="absolute bottom-10 right-10 bg-white text-black px-10 py-4 rounded-full font-black text-xl">
+            NEXT QUESTION
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (gameState === 'leaderboard') {
+    return (
+      <div className="min-h-screen bg-black text-white p-10 flex flex-col items-center">
+        <Trophy size={100} className="text-amber-400 mb-6" />
+        <h1 className="text-6xl font-black mb-10">LEADERBOARD</h1>
+        <div className="w-full max-w-2xl space-y-4">
+          {players.map((p, i) => (
+            <div key={i} className="flex justify-between bg-zinc-900 p-6 rounded-2xl border border-white/10 items-center">
+              <span className="text-2xl font-bold">{i + 1}. @{p.username}</span>
+              <span className="text-3xl font-black text-cyan-400">{p.score} pts</span>
+            </div>
+          ))}
+        </div>
+        {viewMode === 'host' && (
+          <button onClick={() => setGameState('dashboard')} className="mt-10 bg-fuchsia-600 px-10 py-4 rounded-full font-bold">
+            CLOSE LOBBY
+          </button>
+        )}
       </div>
     );
   }
