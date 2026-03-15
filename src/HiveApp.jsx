@@ -101,7 +101,7 @@ export default function App() {
   const addLog = (msg) => setLogs(prev => [...prev.slice(-4), `${new Date().toLocaleTimeString()} - ${msg}`]);
   const triggerNotification = (msg) => { setNotification(msg); setTimeout(() => setNotification(''), 4000); };
 
-  // --- ACTIONS ---
+  // --- AUTH & ACTIONS ---
   const handleKeychainLogin = () => {
     if (!loginInput.trim()) return;
     setUsername(loginInput.toLowerCase());
@@ -140,7 +140,26 @@ export default function App() {
     await supabase.from('rooms').update({ status: 'playing' }).eq('pin', gameId);
   };
 
-  // --- RENDERS ---
+  // Timer logic
+  useEffect(() => {
+    let timer;
+    if (gameState === 'playing' && timeLeft > 0) {
+      timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    } else if (gameState === 'playing' && timeLeft === 0) {
+      setGameState('revealing');
+      setTimeout(() => {
+        if (currentQIndex < QUESTIONS.length - 1) {
+          setCurrentQIndex(v => v + 1);
+          setGameState('playing');
+        } else {
+          setGameState('leaderboard');
+        }
+      }, 5000);
+    }
+    return () => clearInterval(timer);
+  }, [gameState, timeLeft]);
+
+  // --- RENDERERS ---
 
   const renderDashboard = () => (
     <div className="min-h-screen bg-slate-50 dark:bg-black text-slate-900 dark:text-gray-100 flex flex-col transition-colors duration-500">
@@ -318,21 +337,18 @@ export default function App() {
       <div className="min-h-screen bg-black text-white p-6 flex flex-col items-center justify-center relative transition-colors duration-500">
         <div className="absolute top-10 flex items-center space-x-6 text-6xl font-black">
           <Clock size={56} className={timeLeft < 5 ? "text-rose-500 animate-pulse" : "text-cyan-400"} />
-          <span className={timeLeft < 5 ? "text-rose-500" : "text-white"}>{timeLeft}</span>
+          <span>{timeLeft}</span>
         </div>
         <h2 className="text-5xl sm:text-7xl font-black mb-16 text-center max-w-5xl leading-tight drop-shadow-lg">
           {viewMode === 'host' ? q.text : "Select Answer on TV!"}
         </h2>
         <div className="grid grid-cols-2 gap-8 w-full max-w-6xl">
           {q.options.map((opt, i) => (
-            <button key={i} onClick={() => setSelectedAnswer(i)} className={`${COLORS[i]} p-12 sm:p-20 rounded-3xl flex flex-col items-center justify-center transition-all ${selectedAnswer === i ? 'ring-8 ring-white scale-105' : 'opacity-80'} min-h-[160px]`}>
+            <button key={i} onClick={() => setSelectedAnswer(i)} className={`${COLORS[i]} p-12 sm:p-20 rounded-3xl flex flex-col items-center transition-all ${selectedAnswer === i ? 'ring-8 ring-white scale-105' : 'opacity-80'}`}>
               {viewMode === 'host' ? <span className="text-3xl font-bold">{opt}</span> : React.createElement(ICONS[i], {size: 100, fill: "currentColor"})}
             </button>
           ))}
         </div>
-        {!viewMode === 'host' && selectedAnswer !== null && (
-          <div className="mt-12 text-3xl font-black text-cyan-400 animate-pulse">ANSWER LOCKED</div>
-        )}
       </div>
     );
   };
@@ -350,7 +366,7 @@ export default function App() {
              <span className="text-4xl font-black text-amber-400">{score || 2850} PTS</span>
           </div>
        </div>
-       <button onClick={() => setGameState('dashboard')} className="mt-12 bg-white text-black px-12 py-5 rounded-full font-black text-xl hover:scale-105 transition-all shadow-white/20 shadow-lg">Back to Lobby</button>
+       <button onClick={() => setGameState('dashboard')} className="mt-12 bg-white text-black px-10 py-4 rounded-full font-black text-xl hover:scale-105 transition-all shadow-white/20 shadow-lg">Back to Home</button>
     </div>
   );
 
@@ -359,7 +375,7 @@ export default function App() {
       <div className="bg-zinc-900 border border-white/10 rounded-3xl p-10 w-full max-w-md shadow-2xl relative">
         <button onClick={() => setIsLoginModalOpen(false)} className="absolute top-5 right-5 text-gray-500 hover:text-white"><XCircle /></button>
         <h2 className="text-3xl font-black text-center text-white mb-8 flex items-center justify-center"><Key className="mr-3 text-fuchsia-500" /> Hive Keychain</h2>
-        <input className="w-full p-4 rounded-xl bg-black border border-white/10 text-white font-bold mb-6 text-center text-xl shadow-inner" placeholder="Username" value={loginInput} onChange={e => setLoginInput(e.target.value)} />
+        <input className="w-full p-4 rounded-xl bg-black border border-white/10 text-white font-bold mb-6 text-center text-xl shadow-inner" placeholder="Username" value={loginInput} onChange={e => setLoginInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleKeychainLogin()} />
         <button onClick={handleKeychainLogin} className="w-full bg-rose-600 text-white py-4 rounded-xl font-black text-xl hover:bg-rose-500 transition-all shadow-lg shadow-rose-600/20">Sign In</button>
       </div>
     </div>
