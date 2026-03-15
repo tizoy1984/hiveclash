@@ -759,7 +759,7 @@ export default function App() {
                   />
                 </div>
                 <div className="text-center sm:text-left">
-                  <h2 className="text-cyan-600 dark:text-cyan-400 font-bold uppercase tracking-widest text-sm mb-3">Join at HiveClash.app with PIN:</h2>
+                  <h2 className="text-cyan-400 font-bold uppercase tracking-widest text-sm mb-2 z-10">Join at {window.location.hostname} with PIN:</h2>
                   <div className="text-6xl sm:text-8xl font-black tracking-widest text-slate-900 dark:text-white drop-shadow-sm dark:drop-shadow-[0_0_15px_rgba(255,255,255,0.3)] mb-6">
                     {formattedId}
                   </div>
