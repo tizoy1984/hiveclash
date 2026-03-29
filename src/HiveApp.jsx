@@ -1,6 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
 import { stakePrizeToBank, HIVE_BANK_ACCOUNT } from './hiveKeychainBank';
+import {
+  deleteLiveRoom,
+  fetchLiveRoomsFromCloud,
+  isLiveRoomCloudSyncEnabled,
+  mergeRemoteLiveGames,
+  subscribeLiveRooms,
+  upsertLiveRoom,
+} from './roomSync';
 import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
@@ -106,6 +114,23 @@ const INITIAL_GAMES = [
   { id: '998877', status: 'scheduled', host: 'web3_ninja', title: 'Weekly Dev Quiz', prize: 100, date: '2026-03-22', time: '20:00', players: 0, maxPlayers: 50, interested: ['hiveking'], image: 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=600&q=80' }
 ];
 
+const BUILTIN_GAME_IDS = new Set(INITIAL_GAMES.map((g) => g.id));
+const HIVECLASH_GAMES_STORAGE_KEY = 'hiveclash.customGames.v1';
+
+const mergeBuiltinAndStoredGames = () => {
+  let stored = [];
+  try {
+    stored = JSON.parse(localStorage.getItem(HIVECLASH_GAMES_STORAGE_KEY) || '[]');
+  } catch {
+    /* ignore */
+  }
+  const byId = new Map(INITIAL_GAMES.map((g) => [g.id, { ...g }]));
+  for (const g of stored) {
+    if (g && typeof g.id === 'string') byId.set(g.id, g);
+  }
+  return Array.from(byId.values());
+};
+
 // --- CONFETTI COMPONENT ---
 const Confetti = () => {
   return (
@@ -146,8 +171,10 @@ export default function App() {
   const [streak, setStreak] = useState(0);
   const [logs, setLogs] = useState([]);
   
-  // App & Game State
-  const [games, setGames] = useState(INITIAL_GAMES);
+  // App & Game State (builtin + rooms saved in localStorage; optional Supabase for cross-device)
+  const [games, setGames] = useState(() => mergeBuiltinAndStoredGames());
+  const gamesRef = useRef(games);
+  gamesRef.current = games;
   const [viewMode, setViewMode] = useState('player'); // 'host' or 'player'
   const [prizePool, setPrizePool] = useState(0);
   const [players, setPlayers] = useState([]); // Users in the waiting room
@@ -178,6 +205,39 @@ export default function App() {
 
   /** PIN from /join/:pin — cleared after we attempt join (room must exist in `games` on this device). */
   const joinPinFromUrlRef = useRef(null);
+  const joinGraceTimerRef = useRef(null);
+
+  useEffect(() => {
+    const custom = games.filter((g) => !BUILTIN_GAME_IDS.has(g.id));
+    try {
+      localStorage.setItem(HIVECLASH_GAMES_STORAGE_KEY, JSON.stringify(custom));
+    } catch {
+      /* private mode */
+    }
+  }, [games]);
+
+  useEffect(() => {
+    if (!isLiveRoomCloudSyncEnabled()) return;
+    let cancelled = false;
+    const pull = () =>
+      fetchLiveRoomsFromCloud().then((remote) => {
+        if (cancelled || !remote.length) return;
+        setGames((prev) => mergeRemoteLiveGames(prev, remote));
+      });
+    pull();
+    const pollMs = [800, 2500, 6000];
+    const pollIds = pollMs.map((ms) => setTimeout(() => void pull(), ms));
+    const unsub = subscribeLiveRooms((remote) => {
+      setGames((prev) => mergeRemoteLiveGames(prev, remote));
+    });
+    const interval = setInterval(() => void pull(), 20000);
+    return () => {
+      cancelled = true;
+      pollIds.forEach(clearTimeout);
+      clearInterval(interval);
+      unsub();
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -292,11 +352,16 @@ export default function App() {
     );
     setCurrentQIndex(0);
     setSelectedAnswer(null);
-    
-    // Simulate other players already in the room
+
     const mockRoomPlayers = [...MOCK_USERS].sort(() => 0.5 - Math.random()).slice(0, Math.min(game.players, 5));
     setPlayers([username, ...mockRoomPlayers]);
-    
+
+    const maxP = game.maxPlayers ?? 50;
+    const nextCount = Math.min(maxP, (game.players ?? 0) + 1);
+    const bumped = { ...game, players: nextCount };
+    setGames((prev) => prev.map((g) => (g.id === game.id ? bumped : g)));
+    void upsertLiveRoom(bumped);
+
     addLog(`@${username} signed transfer of 1 HIVE to join game ${game.id}.`);
     setGameState('waitingRoom');
   };
@@ -310,6 +375,10 @@ export default function App() {
     }
     const game = games.find((g) => g.id === pin && g.status === 'live');
     if (game) {
+      if (joinGraceTimerRef.current) {
+        clearTimeout(joinGraceTimerRef.current);
+        joinGraceTimerRef.current = null;
+      }
       joinLiveGame(game);
       joinPinFromUrlRef.current = null;
       try {
@@ -319,15 +388,37 @@ export default function App() {
       }
       return;
     }
-    triggerNotification(
-      'No live room for this PIN on this device. Open the link on a browser that lists that game, or use Live Games when the room is published to the chain.',
-    );
-    joinPinFromUrlRef.current = null;
-    try {
-      sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
-    } catch {
-      /* ignore */
-    }
+    if (joinGraceTimerRef.current) return;
+
+    const failJoin = () => {
+      joinGraceTimerRef.current = null;
+      if (joinPinFromUrlRef.current !== pin) return;
+      const g2 = gamesRef.current.find((g) => g.id === pin && g.status === 'live');
+      if (g2) {
+        joinLiveGame(g2);
+        joinPinFromUrlRef.current = null;
+        try {
+          sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      triggerNotification(
+        isLiveRoomCloudSyncEnabled()
+          ? 'No live room for this PIN. Check the PIN, refresh, or confirm the host is online with cloud rooms enabled.'
+          : 'No live room for this PIN. Open the join link on the same browser, or add VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY so phones and PCs share the room list.',
+      );
+      joinPinFromUrlRef.current = null;
+      try {
+        sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    const delay = isLiveRoomCloudSyncEnabled() ? 4000 : 150;
+    joinGraceTimerRef.current = setTimeout(failJoin, delay);
   }, [username, games]);
 
   const toggleInterest = (gameId) => {
@@ -430,6 +521,7 @@ export default function App() {
             questions: normalizedQuiz,
           };
           setGames((prev) => [...prev, newGame]);
+          void upsertLiveRoom(newGame);
           setGameId(newId);
           setPrizePool(hostFunding);
           setViewMode('host');
@@ -536,7 +628,18 @@ export default function App() {
   // --- RENDERERS ---
 
   const renderDashboard = () => {
-    const liveGames = games.filter(g => g.status === 'live');
+    const liveGames = games
+      .filter((g) => g.status === 'live')
+      .sort((a, b) => {
+        if (a.id === gameId) return -1;
+        if (b.id === gameId) return 1;
+        if (username && a.host === username && b.host !== username) return -1;
+        if (username && b.host === username && a.host !== username) return 1;
+        const na = Number(a.id);
+        const nb = Number(b.id);
+        if (!Number.isNaN(na) && !Number.isNaN(nb)) return nb - na;
+        return 0;
+      });
     const scheduledGames = games.filter(g => g.status === 'scheduled');
 
     return (
@@ -1156,8 +1259,31 @@ export default function App() {
           </button>
         </div>
 
+        <div className="absolute top-[3.25rem] sm:top-[4.5rem] left-1/2 transform -translate-x-1/2 z-20 flex flex-col items-center gap-2 max-w-[95vw]">
+          <button
+            type="button"
+            onClick={() => setGameState('dashboard')}
+            className="flex items-center gap-2 text-sm font-bold px-4 py-2 rounded-full bg-white/90 dark:bg-white/10 border border-cyan-200 dark:border-cyan-500/30 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-50 dark:hover:bg-cyan-500/10 shadow-sm"
+          >
+            <Globe size={16} /> View Live Games lobby
+          </button>
+          <p className="text-center text-[11px] sm:text-xs font-medium text-slate-500 dark:text-gray-500 px-2">
+            Your room is listed under <span className="text-cyan-600 dark:text-cyan-400">Live Now</span> on the home page.
+            {!isLiveRoomCloudSyncEnabled() && (
+              <>
+                {' '}For other devices, set{' '}
+                <span className="font-mono text-[10px] text-slate-600 dark:text-gray-400">VITE_SUPABASE_URL</span>
+                {' + '}
+                <span className="font-mono text-[10px] text-slate-600 dark:text-gray-400">VITE_SUPABASE_ANON_KEY</span>
+                {' in Railway — SQL in '}
+                <span className="font-mono text-[10px] text-slate-600 dark:text-gray-400">roomSync.js</span>.
+              </>
+            )}
+          </p>
+        </div>
+
         {isHostView ? (
-          <div className="flex-1 flex flex-col mt-16 max-w-7xl mx-auto w-full z-10">
+          <div className="flex-1 flex flex-col mt-28 sm:mt-32 max-w-7xl mx-auto w-full z-10">
             <div className="flex flex-col lg:flex-row justify-between items-center bg-white dark:bg-zinc-900/60 backdrop-blur-xl p-6 sm:p-10 rounded-3xl shadow-2xl dark:shadow-[0_0_40px_rgba(6,182,212,0.1)] border border-gray-200 dark:border-cyan-500/20 gap-8 relative overflow-hidden">
               <div className="absolute -right-20 -top-20 w-64 h-64 bg-cyan-500/10 blur-[60px] rounded-full pointer-events-none hidden dark:block"></div>
               
@@ -1235,7 +1361,7 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center z-10 mt-16">
+          <div className="flex-1 flex flex-col items-center justify-center text-center z-10 mt-28 sm:mt-32">
             <div className="bg-white dark:bg-zinc-900/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 p-10 rounded-3xl shadow-2xl dark:shadow-[0_0_50px_rgba(217,70,239,0.15)] max-w-sm w-full transform hover:scale-105 transition-transform duration-500 relative overflow-hidden">
                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 via-fuchsia-500 to-amber-500"></div>
               
@@ -1510,6 +1636,11 @@ export default function App() {
 
           <button 
             onClick={() => {
+              const endedId = gameId;
+              void deleteLiveRoom(endedId);
+              if (endedId && !BUILTIN_GAME_IDS.has(endedId)) {
+                setGames((prev) => prev.filter((g) => g.id !== endedId));
+              }
               setGameState('dashboard');
               setScore(0);
               setStreak(0);
@@ -1622,6 +1753,22 @@ export default function App() {
         {gameState === 'waitingRoom' && renderWaitingRoom()}
         {(gameState === 'playing' || gameState === 'revealing') && renderPlaying()}
         {gameState === 'leaderboard' && renderLeaderboard()}
+
+        {gameId &&
+          viewMode === 'host' &&
+          activeQuiz.length > 0 &&
+          (gameState === 'dashboard' || gameState === 'hostSetup') && (
+            <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[95vw] max-w-md">
+              <button
+                type="button"
+                onClick={() => setGameState('waitingRoom')}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl font-black text-sm sm:text-base bg-cyan-600 hover:bg-cyan-500 text-white shadow-xl dark:shadow-[0_0_25px_rgba(6,182,212,0.45)] border border-cyan-400/40"
+              >
+                <MonitorPlay size={20} />
+                Return to your waiting room (PIN {gameId})
+              </button>
+            </div>
+          )}
 
         {/* Modals */}
         {isLoginModalOpen && renderLoginModal()}
