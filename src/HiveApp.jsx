@@ -1,13 +1,15 @@
-import React, { useState, useEffect } from 'react';
-import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
+import { stakePrizeToBank, HIVE_BANK_ACCOUNT } from './hiveKeychainBank';
+import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
-const QUESTIONS = [
+const DEFAULT_DEMO_QUESTIONS = [
   {
     id: 1,
     text: "What is the block time of the Hive Blockchain?",
     options: ["10 Minutes", "3 Seconds", "12 Seconds", "1 Minute"],
-    correct: 1, 
+    correct: 1,
     type: "multiple"
   },
   {
@@ -25,6 +27,57 @@ const QUESTIONS = [
     type: "multiple"
   }
 ];
+
+const makeDraftQuestion = () => ({
+  id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  text: "",
+  type: "multiple",
+  options: ["", "", "", ""],
+  correct: 0
+});
+
+const normalizeHostQuiz = (questions) =>
+  questions.map((q, i) => ({
+    id: i + 1,
+    text: q.text.trim(),
+    type: q.type,
+    correct: q.correct,
+    options: q.type === "boolean" ? ["True", "False"] : q.options.map((o) => String(o).trim())
+  }));
+
+const HIVECLASH_USER_KEY = 'hiveclash.hiveUsername';
+const JOIN_PIN_SESSION_KEY = 'hiveclash.pendingJoinPin';
+
+/** Join links follow whatever host opened the app (Railway, future hiveclash.app, localhost). */
+const getJoinGameUrl = (pin) =>
+  `${typeof window !== 'undefined' ? window.location.origin : ''}/join/${pin}`;
+
+const normalizeHiveUsername = (raw) =>
+  raw.trim().toLowerCase().replace(/^@+/, '');
+
+const isValidStoredHiveUsername = (s) =>
+  typeof s === 'string' &&
+  s.length >= 3 &&
+  s.length <= 16 &&
+  /^[a-z0-9.-]+$/.test(s);
+
+const validateHostQuiz = (questions) => {
+  if (!questions.length) return "Add at least one question.";
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    if (!q.text?.trim()) return `Question ${i + 1}: enter the question text.`;
+    if (q.type === "boolean") {
+      if (q.correct !== 0 && q.correct !== 1)
+        return `Question ${i + 1}: mark whether True or False is correct.`;
+    } else {
+      if (!q.options || q.options.some((o) => !String(o).trim()))
+        return `Question ${i + 1}: fill in all four answer choices.`;
+      if (q.correct < 0 || q.correct > 3)
+        return `Question ${i + 1}: select which choice is correct.`;
+    }
+  }
+  return null;
+};
 
 // NEON GLOW COLORS
 const COLORS = [
@@ -113,11 +166,60 @@ export default function App() {
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
+  const [hostQuizQuestions, setHostQuizQuestions] = useState(() => [makeDraftQuestion()]);
+  const [activeQuiz, setActiveQuiz] = useState([]);
 
   // Login State
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [loginInput, setLoginInput] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [keychainInstalled, setKeychainInstalled] = useState(null);
+  const [isStakingPrize, setIsStakingPrize] = useState(false);
+
+  /** PIN from /join/:pin — cleared after we attempt join (room must exist in `games` on this device). */
+  const joinPinFromUrlRef = useRef(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HIVECLASH_USER_KEY);
+      if (!raw) return;
+      const user = normalizeHiveUsername(raw);
+      if (isValidStoredHiveUsername(user)) setUsername(user);
+      else localStorage.removeItem(HIVECLASH_USER_KEY);
+    } catch {
+      /* private mode / blocked storage */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isLoginModalOpen) return;
+    const detect = () => typeof window !== 'undefined' && !!window.hive_keychain;
+    setKeychainInstalled(detect());
+    const retry = setTimeout(() => setKeychainInstalled(detect()), 500);
+    void import('@hiveio/dhive');
+    return () => clearTimeout(retry);
+  }, [isLoginModalOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const m = window.location.pathname.match(/^\/join\/([^/]+)\/?$/);
+    if (m) {
+      try {
+        sessionStorage.setItem(JOIN_PIN_SESSION_KEY, m[1]);
+      } catch {
+        /* private mode */
+      }
+      joinPinFromUrlRef.current = m[1];
+      window.history.replaceState(null, '', '/');
+    } else {
+      try {
+        const stored = sessionStorage.getItem(JOIN_PIN_SESSION_KEY);
+        if (stored) joinPinFromUrlRef.current = stored;
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
 
   // --- LOGIC ---
   const addLog = (message) => {
@@ -130,21 +232,47 @@ export default function App() {
   };
 
   const handleKeychainLogin = () => {
-    if (!loginInput.trim()) return;
+    const user = normalizeHiveUsername(loginInput);
+    if (!user) return;
+
+    if (typeof window === 'undefined' || !window.hive_keychain?.requestSignBuffer) {
+      triggerNotification('Hive Keychain not found. Install the browser extension from hive-keychain.com');
+      return;
+    }
+
     setIsLoggingIn(true);
-    
-    // Simulate Hive Keychain extension pop-up delay
-    setTimeout(() => {
-      setUsername(loginInput.toLowerCase());
-      setIsLoggingIn(false);
-      setIsLoginModalOpen(false);
-      addLog(`@${loginInput.toLowerCase()} authenticated via Hive Keychain`);
-      setLoginInput('');
-    }, 1500);
+    // No await before Keychain: Chromium drops user activation after async gaps, which blocks the extension UI.
+    loginWithHiveKeychainPostingKey(user, 'HiveClash — Sign in')
+      .then(() => {
+        setUsername(user);
+        try {
+          localStorage.setItem(HIVECLASH_USER_KEY, user);
+        } catch {
+          /* ignore */
+        }
+        setIsLoginModalOpen(false);
+        addLog(`@${user} authenticated via Hive Keychain`);
+        setLoginInput('');
+      })
+      .catch((err) => {
+        const msg =
+          err?.message ||
+          err?.error ||
+          (typeof err === 'string' ? err : null) ||
+          'Login failed or was cancelled in Keychain.';
+        triggerNotification(String(msg));
+        console.error(err);
+      })
+      .finally(() => setIsLoggingIn(false));
   };
 
   const handleLogout = () => {
     setUsername('');
+    try {
+      localStorage.removeItem(HIVECLASH_USER_KEY);
+    } catch {
+      /* ignore */
+    }
     addLog(`User logged out.`);
   };
 
@@ -156,6 +284,14 @@ export default function App() {
     setGameId(game.id);
     setPrizePool(game.prize + 1); // Mock adding buy-in
     setViewMode('player');
+    setActiveQuiz(
+      (game.questions?.length ? game.questions : DEFAULT_DEMO_QUESTIONS).map((q, i) => ({
+        ...q,
+        id: q.id ?? i + 1
+      }))
+    );
+    setCurrentQIndex(0);
+    setSelectedAnswer(null);
     
     // Simulate other players already in the room
     const mockRoomPlayers = [...MOCK_USERS].sort(() => 0.5 - Math.random()).slice(0, Math.min(game.players, 5));
@@ -164,6 +300,35 @@ export default function App() {
     addLog(`@${username} signed transfer of 1 HIVE to join game ${game.id}.`);
     setGameState('waitingRoom');
   };
+
+  useEffect(() => {
+    const pin = joinPinFromUrlRef.current;
+    if (!pin) return;
+    if (!username.trim()) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    const game = games.find((g) => g.id === pin && g.status === 'live');
+    if (game) {
+      joinLiveGame(game);
+      joinPinFromUrlRef.current = null;
+      try {
+        sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    triggerNotification(
+      'No live room for this PIN on this device. Open the link on a browser that lists that game, or use Live Games when the room is published to the chain.',
+    );
+    joinPinFromUrlRef.current = null;
+    try {
+      sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [username, games]);
 
   const toggleInterest = (gameId) => {
     if (!username.trim()) {
@@ -191,7 +356,7 @@ export default function App() {
   };
 
   const startHosting = () => {
-    if (!username.trim() || hostFunding < 0) return;
+    if (!username.trim()) return;
     if (!hostGameTitle.trim()) {
       triggerNotification("Please give your game a title.");
       return;
@@ -200,38 +365,98 @@ export default function App() {
       triggerNotification("Please select a date and time to schedule the game.");
       return;
     }
-
-    const newId = Math.floor(100000 + Math.random() * 900000).toString(); // Generate random 6-digit PIN
-
-    if (isScheduling) {
-      const newGame = {
-        id: newId,
-        status: 'scheduled',
-        host: username,
-        title: hostGameTitle,
-        prize: hostFunding,
-        date: scheduleDate,
-        time: scheduleTime,
-        players: 0,
-        maxPlayers: 50,
-        interested: [],
-        image: hostImageUrl || DEFAULT_IMAGE
-      };
-      setGames(prev => [...prev, newGame]);
-      triggerNotification("Game scheduled successfully!");
-      addLog(`@${username} scheduled game ${newId} for ${scheduleDate} ${scheduleTime}.`);
-      setGameState('dashboard');
-    } else {
-      setGameId(newId);
-      setPrizePool(hostFunding);
-      setViewMode('host');
-      setPlayers([]);
-      addLog(`@${username} hosted game ${newId} and funded ${hostFunding} HIVE.`);
-      setGameState('waitingRoom');
+    if (hostFunding <= 0 || Number.isNaN(Number(hostFunding))) {
+      triggerNotification(`Set a prize amount above 0 HIVE to stake to @${HIVE_BANK_ACCOUNT}.`);
+      return;
     }
+    if (typeof window === 'undefined' || !window.hive_keychain?.requestTransfer) {
+      triggerNotification(
+        `Install Hive Keychain to send your prize stake to @${HIVE_BANK_ACCOUNT}.`,
+      );
+      return;
+    }
+
+    const quizErr = validateHostQuiz(hostQuizQuestions);
+    if (quizErr) {
+      triggerNotification(quizErr);
+      return;
+    }
+
+    const normalizedQuiz = normalizeHostQuiz(hostQuizQuestions);
+    const newId = Math.floor(100000 + Math.random() * 900000).toString();
+    const amountStr = Number(hostFunding).toFixed(3);
+    const memo = `hiveclash prize ${newId}`;
+
+    setIsStakingPrize(true);
+    stakePrizeToBank({
+      fromUsername: username,
+      amountFixed3: amountStr,
+      memo,
+    })
+      .then(() => {
+        addLog(
+          `@${username} staked ${amountStr} HIVE to @${HIVE_BANK_ACCOUNT} for game ${newId} (memo: ${memo}).`,
+        );
+        if (isScheduling) {
+          const newGame = {
+            id: newId,
+            status: 'scheduled',
+            host: username,
+            title: hostGameTitle,
+            prize: hostFunding,
+            date: scheduleDate,
+            time: scheduleTime,
+            players: 0,
+            maxPlayers: 50,
+            interested: [],
+            image: hostImageUrl || DEFAULT_IMAGE,
+            questions: normalizedQuiz,
+          };
+          setGames((prev) => [...prev, newGame]);
+          triggerNotification(`Scheduled! Prize is secured with @${HIVE_BANK_ACCOUNT}.`);
+          addLog(`@${username} scheduled game ${newId} for ${scheduleDate} ${scheduleTime}.`);
+          setGameState('dashboard');
+        } else {
+          const newGame = {
+            id: newId,
+            status: 'live',
+            host: username,
+            title: hostGameTitle,
+            prize: hostFunding,
+            players: 0,
+            maxPlayers: 50,
+            interested: [],
+            image: hostImageUrl || DEFAULT_IMAGE,
+            questions: normalizedQuiz,
+          };
+          setGames((prev) => [...prev, newGame]);
+          setGameId(newId);
+          setPrizePool(hostFunding);
+          setViewMode('host');
+          setPlayers([]);
+          setActiveQuiz(normalizedQuiz);
+          setCurrentQIndex(0);
+          setSelectedAnswer(null);
+          addLog(`@${username} created room ${newId}; prize held by @${HIVE_BANK_ACCOUNT}.`);
+          setGameState('waitingRoom');
+        }
+      })
+      .catch((err) => {
+        triggerNotification(
+          err?.message || `Could not stake to @${HIVE_BANK_ACCOUNT}. Try again or cancel.`,
+        );
+        console.error(err);
+      })
+      .finally(() => setIsStakingPrize(false));
   };
 
   const beginTrivia = () => {
+    if (!activeQuiz.length) {
+      triggerNotification("This room has no questions yet.");
+      return;
+    }
+    setCurrentQIndex(0);
+    setSelectedAnswer(null);
     setGameState('playing');
     setTimeLeft(15);
     addLog(`Host started the trivia!`);
@@ -251,7 +476,7 @@ export default function App() {
   };
 
   const copyToClipboard = () => {
-    const url = `https://hiveclash.app/join/${gameId}`;
+    const url = getJoinGameUrl(gameId);
     const textArea = document.createElement("textarea");
     textArea.value = url;
     document.body.appendChild(textArea);
@@ -278,7 +503,9 @@ export default function App() {
       setGameState('revealing');
       addLog(`Host revealed salt. Indexer verifying...`);
       
-      const isCorrect = selectedAnswer === QUESTIONS[currentQIndex].correct;
+      const deck = activeQuiz;
+      const currentQ = deck[currentQIndex];
+      const isCorrect = currentQ && selectedAnswer === currentQ.correct;
       if (isCorrect) {
         const timeBonus = Math.floor((timeLeft / 15) * 500);
         const streakBonus = streak * 100;
@@ -292,19 +519,19 @@ export default function App() {
 
       // Auto-advance
       setTimeout(() => {
-        if (currentQIndex < QUESTIONS.length - 1) {
+        if (currentQIndex < deck.length - 1) {
           setCurrentQIndex(prev => prev + 1);
           setSelectedAnswer(null);
           setTimeLeft(15);
           setGameState('playing');
         } else {
           setGameState('leaderboard');
-          addLog(`Game Over! Distributing Prize Pool...`);
+          addLog(`Game Over! Winner should receive ${prizePool} HIVE from @${HIVE_BANK_ACCOUNT}.`);
         }
       }, 5000);
     }
     return () => clearInterval(timer);
-  }, [gameState, timeLeft, selectedAnswer, currentQIndex]);
+  }, [gameState, timeLeft, selectedAnswer, currentQIndex, activeQuiz]);
 
   // --- RENDERERS ---
 
@@ -359,6 +586,7 @@ export default function App() {
                   setHostImageUrl('');
                   setHostFunding(50);
                   setIsScheduling(false);
+                  setHostQuizQuestions([makeDraftQuestion()]);
                   setGameState('hostSetup');
                 }} 
                 className="bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:from-fuchsia-500 hover:to-purple-500 px-4 sm:px-6 py-2.5 rounded-full font-bold flex items-center transition-all shadow-md dark:shadow-[0_0_20px_rgba(192,38,211,0.4)] dark:hover:shadow-[0_0_30px_rgba(192,38,211,0.6)] text-white border border-fuchsia-400/30"
@@ -483,7 +711,7 @@ export default function App() {
               {liveGames.length === 0 && (
                 <div className="col-span-full text-center py-16 bg-gray-100 dark:bg-zinc-900/30 rounded-3xl border border-gray-300 dark:border-white/5 border-dashed">
                   <p className="text-slate-500 dark:text-gray-500 font-bold text-xl mb-4">No live games right now.</p>
-                  <button onClick={() => setGameState('hostSetup')} className="text-fuchsia-600 dark:text-fuchsia-400 hover:text-fuchsia-700 dark:hover:text-fuchsia-300 font-bold flex items-center justify-center mx-auto transition-colors">
+                  <button onClick={() => { setHostQuizQuestions([makeDraftQuestion()]); setGameState('hostSetup'); }} className="text-fuchsia-600 dark:text-fuchsia-400 hover:text-fuchsia-700 dark:hover:text-fuchsia-300 font-bold flex items-center justify-center mx-auto transition-colors">
                     <Plus size={18} className="mr-1" /> Host the first one!
                   </button>
                 </div>
@@ -611,7 +839,7 @@ export default function App() {
         <ChevronLeft className="mr-1" /> Back to Dashboard
       </button>
 
-      <div className="bg-white/90 dark:bg-zinc-900/80 backdrop-blur-xl rounded-3xl p-8 sm:p-10 shadow-2xl dark:shadow-[0_0_50px_rgba(192,38,211,0.15)] w-full max-w-lg text-center border border-gray-200 dark:border-white/10 relative overflow-hidden">
+      <div className="bg-white/90 dark:bg-zinc-900/80 backdrop-blur-xl rounded-3xl p-8 sm:p-10 shadow-2xl dark:shadow-[0_0_50px_rgba(192,38,211,0.15)] w-full max-w-2xl text-center border border-gray-200 dark:border-white/10 relative overflow-hidden max-h-[90vh] overflow-y-auto">
         {/* Decorative elements (visible mainly in dark mode) */}
         <div className="absolute -top-20 -right-20 w-40 h-40 bg-fuchsia-500/20 blur-[50px] rounded-full hidden dark:block"></div>
         <div className="absolute -bottom-20 -left-20 w-40 h-40 bg-cyan-500/20 blur-[50px] rounded-full hidden dark:block"></div>
@@ -623,7 +851,10 @@ export default function App() {
             </div>
           </div>
           <h1 className="text-4xl font-black text-slate-900 dark:text-white mb-2 tracking-tight">Host a Game</h1>
-          <p className="text-slate-500 dark:text-gray-400 mb-8 font-medium">Set up your trivia room and fund the prize pool.</p>
+          <p className="text-slate-500 dark:text-gray-400 mb-4 font-medium">
+            Set up your room. When you create or schedule the game, you stake the prize in HIVE to the HiveClash bank —{' '}
+            <span className="text-cyan-600 dark:text-cyan-400 font-bold">@{HIVE_BANK_ACCOUNT}</span> — via Hive Keychain. The winner is paid from that bank.
+          </p>
           
           <div className="space-y-6 text-left">
             
@@ -656,18 +887,191 @@ export default function App() {
 
             {/* Prize Pool */}
             <div>
-              <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">Initial Prize Pool</label>
+              <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">Prize stake (sent to @{HIVE_BANK_ACCOUNT})</label>
+              <p className="text-xs text-slate-500 dark:text-gray-400 mb-2 pl-1">
+                You transfer this amount in Keychain when you tap Create Room / Schedule. Winners receive payouts from @{HIVE_BANK_ACCOUNT}.
+              </p>
               <div className="relative">
                 <Coins size={24} className="absolute left-5 top-1/2 transform -translate-y-1/2 text-amber-500 dark:drop-shadow-[0_0_8px_rgba(245,158,11,0.8)]" />
                 <input 
                   type="number" 
-                  min="0"
+                  min="0.001"
+                  step="0.001"
                   value={hostFunding}
                   onChange={(e) => setHostFunding(Number(e.target.value))}
-                  className="w-full pl-14 pr-20 py-4 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 focus:outline-none text-2xl font-black text-slate-900 dark:text-white transition-all shadow-sm dark:shadow-none"
+                  disabled={isStakingPrize}
+                  className="w-full pl-14 pr-20 py-4 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 focus:outline-none text-2xl font-black text-slate-900 dark:text-white transition-all shadow-sm dark:shadow-none disabled:opacity-50"
                 />
                 <span className="absolute right-5 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 font-bold uppercase tracking-widest text-sm">HIVE</span>
               </div>
+            </div>
+
+            {/* Custom quiz */}
+            <div className="pt-4 border-t border-gray-200 dark:border-white/10 text-left">
+              <label className="flex items-center text-xs font-bold text-gray-500 mb-3 uppercase tracking-widest pl-1">
+                <ListOrdered size={16} className="mr-2 text-fuchsia-500 shrink-0" />
+                Questions and answers
+              </label>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 pl-1">
+                Build your trivia. Mark the correct answer for each question.
+              </p>
+              <div className="space-y-5 max-h-[min(420px,50vh)] overflow-y-auto pr-1">
+                {hostQuizQuestions.map((hq, qi) => (
+                  <div
+                    key={hq.id}
+                    className="rounded-2xl border border-gray-200 dark:border-white/10 p-4 sm:p-5 bg-gray-50/80 dark:bg-black/30 space-y-3"
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="font-black text-slate-800 dark:text-white">Question {qi + 1}</span>
+                      {hostQuizQuestions.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHostQuizQuestions((prev) => prev.filter((_, i) => i !== qi))
+                          }
+                          className="p-2 rounded-lg text-rose-500 hover:bg-rose-500/10 transition-colors"
+                          title="Remove question"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      value={hq.text}
+                      onChange={(e) =>
+                        setHostQuizQuestions((prev) =>
+                          prev.map((q, i) => (i === qi ? { ...q, text: e.target.value } : q))
+                        )
+                      }
+                      placeholder="Ask something players should answer…"
+                      rows={2}
+                      className="w-full px-4 py-3 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-fuchsia-500 focus:ring-2 focus:ring-fuchsia-500/20 focus:outline-none font-bold text-slate-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-600 resize-y min-h-[72px]"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setHostQuizQuestions((prev) =>
+                            prev.map((q, i) =>
+                              i === qi
+                                ? {
+                                    ...q,
+                                    type: "multiple",
+                                    options: ["", "", "", ""],
+                                    correct: 0
+                                  }
+                                : q
+                            )
+                          )
+                        }
+                        className={`px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-all ${
+                          hq.type === "multiple"
+                            ? "bg-cyan-500 text-white shadow-md"
+                            : "bg-gray-200 dark:bg-white/10 text-slate-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-white/15"
+                        }`}
+                      >
+                        4 choices
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setHostQuizQuestions((prev) =>
+                            prev.map((q, i) =>
+                              i === qi
+                                ? {
+                                    ...q,
+                                    type: "boolean",
+                                    options: ["True", "False"],
+                                    correct: 0
+                                  }
+                                : q
+                            )
+                          )
+                        }
+                        className={`px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-all ${
+                          hq.type === "boolean"
+                            ? "bg-fuchsia-600 text-white shadow-md"
+                            : "bg-gray-200 dark:bg-white/10 text-slate-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-white/15"
+                        }`}
+                      >
+                        True / False
+                      </button>
+                    </div>
+                    {hq.type === "multiple" ? (
+                      <div className="space-y-2">
+                        {hq.options.map((opt, oi) => (
+                          <div key={oi} className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name={`correct-${hq.id}`}
+                              checked={hq.correct === oi}
+                              onChange={() =>
+                                setHostQuizQuestions((prev) =>
+                                  prev.map((q, i) => (i === qi ? { ...q, correct: oi } : q))
+                                )
+                              }
+                              className="w-4 h-4 accent-cyan-600 shrink-0"
+                              title="Mark as correct"
+                            />
+                            <input
+                              type="text"
+                              value={opt}
+                              onChange={(e) =>
+                                setHostQuizQuestions((prev) =>
+                                  prev.map((q, i) =>
+                                    i === qi
+                                      ? {
+                                          ...q,
+                                          options: q.options.map((o, j) =>
+                                            j === oi ? e.target.value : o
+                                          )
+                                        }
+                                      : q
+                                  )
+                                )
+                              }
+                              placeholder={`Answer choice ${oi + 1}`}
+                              className="flex-1 min-w-0 px-4 py-2.5 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 focus:outline-none font-bold text-slate-900 dark:text-white text-sm"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row gap-3 sm:gap-6">
+                        {[
+                          { label: "True is correct", idx: 0 },
+                          { label: "False is correct", idx: 1 }
+                        ].map(({ label, idx }) => (
+                          <label
+                            key={idx}
+                            className="flex items-center gap-2 cursor-pointer font-bold text-slate-800 dark:text-gray-200 text-sm"
+                          >
+                            <input
+                              type="radio"
+                              name={`bool-correct-${hq.id}`}
+                              checked={hq.correct === idx}
+                              onChange={() =>
+                                setHostQuizQuestions((prev) =>
+                                  prev.map((q, i) => (i === qi ? { ...q, correct: idx } : q))
+                                )
+                              }
+                              className="w-4 h-4 accent-fuchsia-600"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setHostQuizQuestions((prev) => [...prev, makeDraftQuestion()])}
+                className="mt-4 w-full py-3 rounded-xl border-2 border-dashed border-fuchsia-300 dark:border-fuchsia-500/40 text-fuchsia-600 dark:text-fuchsia-400 font-bold hover:bg-fuchsia-50 dark:hover:bg-fuchsia-500/10 transition-colors flex items-center justify-center"
+              >
+                <Plus size={18} className="mr-2" /> Add question
+              </button>
             </div>
 
             {/* Timing Toggle */}
@@ -713,10 +1117,18 @@ export default function App() {
             
             <button 
               onClick={startHosting}
-              disabled={!username.trim() || hostFunding < 0}
+              disabled={!username.trim() || hostFunding <= 0 || isStakingPrize}
               className={`w-full text-white py-5 rounded-xl font-black text-2xl disabled:opacity-50 transition-all flex justify-center items-center mt-8 border ${isScheduling ? 'bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-400/30 shadow-md dark:hover:shadow-[0_0_30px_rgba(217,70,239,0.6)]' : 'bg-gradient-to-r from-cyan-600 to-blue-600 border-cyan-400/30 shadow-md dark:hover:shadow-[0_0_30px_rgba(6,182,212,0.6)]'}`}
             >
-              {isScheduling ? "Schedule Game" : "Create Room"}
+              {isStakingPrize ? (
+                <>
+                  <Loader2 className="animate-spin mr-3" size={28} /> Confirm stake in Keychain…
+                </>
+              ) : isScheduling ? (
+                `Stake & schedule (→ @${HIVE_BANK_ACCOUNT})`
+              ) : (
+                `Stake & create room (→ @${HIVE_BANK_ACCOUNT})`
+              )}
             </button>
           </div>
         </div>
@@ -726,7 +1138,7 @@ export default function App() {
 
   const renderWaitingRoom = () => {
     const isHostView = viewMode === 'host';
-    const gameUrl = `https://hiveclash.app/join/${gameId}`;
+    const gameUrl = getJoinGameUrl(gameId);
     const formattedId = gameId ? `${gameId.slice(0,3)} ${gameId.slice(3,6)}` : '000 000';
 
     return (
@@ -794,7 +1206,7 @@ export default function App() {
                 </h3>
                 <button 
                   onClick={beginTrivia}
-                  disabled={players.length === 0}
+                  disabled={players.length === 0 || !activeQuiz.length}
                   className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 disabled:from-gray-400 disabled:to-gray-500 dark:disabled:from-zinc-700 dark:disabled:to-zinc-800 disabled:opacity-50 text-white px-12 py-4 rounded-2xl font-black text-2xl shadow-lg dark:shadow-[0_0_20px_rgba(16,185,129,0.4)] disabled:shadow-none transition-all flex items-center w-full sm:w-auto justify-center border border-emerald-400/30 disabled:border-transparent"
                 >
                   <Play className="mr-3 fill-current" size={28} /> START GAME
@@ -850,7 +1262,14 @@ export default function App() {
   };
 
   const renderPlaying = () => {
-    const q = QUESTIONS[currentQIndex];
+    const q = activeQuiz[currentQIndex];
+    if (!q) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-black text-slate-600 dark:text-gray-400 font-bold p-6">
+          No questions loaded for this game.
+        </div>
+      );
+    }
     const isHostView = viewMode === 'host';
     const isBoolean = q.type === 'boolean';
     const options = q.options;
@@ -899,7 +1318,7 @@ export default function App() {
             </div>
           ) : (
             <div className="font-bold text-xs sm:text-xl bg-gray-100 dark:bg-black/50 px-4 py-2 sm:px-5 sm:py-3 rounded-xl border border-gray-200 dark:border-white/10 text-slate-700 dark:text-gray-300 tracking-wider">
-              Q <span className="text-cyan-600 dark:text-cyan-400 mx-1">{currentQIndex + 1}</span> / {QUESTIONS.length}
+              Q <span className="text-cyan-600 dark:text-cyan-400 mx-1">{currentQIndex + 1}</span> / {activeQuiz.length}
             </div>
           )}
         </div>
@@ -907,25 +1326,26 @@ export default function App() {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col items-center justify-center z-10 w-full max-w-7xl mx-auto">
           
-          {/* Question Text (Host Only) */}
-          {isHostView && (
-            <div className="w-full text-center mb-8 sm:mb-16 transform hover:scale-105 transition-transform duration-500 px-4">
-              <h2 className="text-3xl sm:text-5xl md:text-7xl font-black text-slate-900 dark:text-white leading-tight drop-shadow-sm dark:drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]">
-                {q.text}
-              </h2>
-            </div>
-          )}
-
-          {/* Player Instructions (Player Only) */}
-          {!isHostView && gameState === 'playing' && selectedAnswer === null && (
-             <div className="mb-6 sm:mb-12 text-xl sm:text-4xl font-black text-gray-500 dark:text-gray-400 animate-pulse flex flex-col items-center text-center">
-               <MonitorPlay className="mb-3 sm:mb-6 text-gray-400 dark:text-gray-600" size={56} />
-               Eyes on the big screen!
-             </div>
-          )}
+          {/* Question (host + players — everyone needs the prompt on their device) */}
+          <div className={`w-full text-center px-4 ${isHostView ? 'mb-8 sm:mb-16' : 'mb-6 sm:mb-10'}`}>
+            <h2
+              className={`font-black text-slate-900 dark:text-white leading-tight drop-shadow-sm dark:drop-shadow-[0_0_15px_rgba(255,255,255,0.2)] ${
+                isHostView
+                  ? 'text-3xl sm:text-5xl md:text-7xl transform hover:scale-105 transition-transform duration-500'
+                  : 'text-xl sm:text-3xl md:text-4xl'
+              }`}
+            >
+              {q.text}
+            </h2>
+            {!isHostView && gameState === 'playing' && selectedAnswer === null && (
+              <p className="mt-4 text-sm sm:text-base font-bold text-gray-500 dark:text-gray-400">
+                Tap the correct answer below
+              </p>
+            )}
+          </div>
 
           {/* Answers Grid */}
-          <div className={`grid gap-4 sm:gap-6 w-full ${isBoolean ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl' : 'grid-cols-2 max-w-6xl'}`}>
+          <div className={`grid gap-4 sm:gap-6 w-full ${isBoolean ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl' : 'grid-cols-1 sm:grid-cols-2 max-w-6xl'}`}>
             {options.map((opt, idx) => {
               const Icon = icons[idx];
               const isSelected = selectedAnswer === idx;
@@ -933,7 +1353,12 @@ export default function App() {
               const isCorrect = isRevealing && q.correct === idx;
               const isWrongSelection = isRevealing && isSelected && !isCorrect;
 
-              let btnClass = `${colors[idx]} text-white p-6 sm:p-16 rounded-3xl flex items-center justify-center transition-all cursor-pointer relative overflow-hidden min-h-[140px] sm:min-h-0 `;
+              let btnClass = `${colors[idx]} text-white rounded-3xl flex transition-all cursor-pointer relative overflow-hidden `;
+              if (isHostView) {
+                btnClass += 'p-6 sm:p-16 items-center justify-center min-h-[140px] sm:min-h-0 ';
+              } else {
+                btnClass += 'p-5 sm:p-8 items-center justify-center min-h-[120px] sm:min-h-[140px] ';
+              }
               
               if (isRevealing) {
                 btnClass += isCorrect ? " ring-4 sm:ring-8 ring-white z-10 scale-105 brightness-125" : " opacity-30 grayscale scale-95";
@@ -952,19 +1377,28 @@ export default function App() {
                 >
                   <div className="absolute inset-0 bg-white/10 opacity-0 hover:opacity-100 transition-opacity"></div>
                   
-                  {/* The Shape Icon is huge on Player view, smaller on Host view */}
-                  <div className={`flex items-center w-full ${isHostView ? 'justify-start space-x-5 sm:space-x-8' : 'justify-center'} relative z-10`}>
+                  <div
+                    className={`relative z-10 flex w-full gap-3 sm:gap-5 ${
+                      isHostView
+                        ? 'flex-row items-center justify-start'
+                        : 'flex-col sm:flex-row items-center justify-center text-center sm:text-left'
+                    }`}
+                  >
                     <Icon 
-                      size={isHostView ? (window.innerWidth < 640 ? 36 : 64) : (window.innerWidth < 640 ? 64 : 120)} 
+                      size={isHostView ? (window.innerWidth < 640 ? 36 : 64) : (window.innerWidth < 640 ? 40 : 56)} 
                       strokeWidth={isHostView ? 3 : 2} 
-                      className={isHostView ? "opacity-90 shrink-0" : "opacity-100 drop-shadow-md dark:drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]"} 
+                      className={`shrink-0 ${isHostView ? 'opacity-90' : 'opacity-100 drop-shadow-md dark:drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]'}`} 
                       fill={!isHostView ? "currentColor" : "none"}
                     />
-                    
-                    {/* Text only shows on Host View */}
-                    {isHostView && (
-                      <span className="text-2xl sm:text-4xl md:text-5xl font-bold text-left leading-tight drop-shadow-lg">{opt}</span>
-                    )}
+                    <span
+                      className={`font-bold leading-snug break-words drop-shadow-lg ${
+                        isHostView
+                          ? 'text-2xl sm:text-4xl md:text-5xl text-left'
+                          : 'text-lg sm:text-2xl md:text-3xl'
+                      }`}
+                    >
+                      {opt}
+                    </span>
                   </div>
 
                   {/* Feedback Overlays for Player */}
@@ -1002,11 +1436,35 @@ export default function App() {
         
         <h1 className="text-5xl sm:text-8xl font-black mb-6 tracking-widest text-slate-900 dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-b dark:from-white dark:to-gray-400 drop-shadow-md dark:drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)]">PODIUM</h1>
         
-        <div className="mb-12 sm:mb-16 inline-flex items-center bg-white dark:bg-black/50 px-8 sm:px-10 py-3 sm:py-4 rounded-full border border-amber-300 dark:border-amber-500/30 shadow-lg dark:shadow-[0_0_30px_rgba(245,158,11,0.15)]">
-          <span className="text-slate-600 dark:text-gray-400 font-bold text-sm sm:text-lg uppercase tracking-widest mr-4">Total Prize Distributed</span>
+        <div className="mb-8 inline-flex items-center bg-white dark:bg-black/50 px-8 sm:px-10 py-3 sm:py-4 rounded-full border border-amber-300 dark:border-amber-500/30 shadow-lg dark:shadow-[0_0_30px_rgba(245,158,11,0.15)]">
+          <span className="text-slate-600 dark:text-gray-400 font-bold text-sm sm:text-lg uppercase tracking-widest mr-4">Prize from bank</span>
           <span className="text-amber-500 dark:text-amber-400 font-black text-2xl sm:text-3xl flex items-center dark:drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]">
             <Coins size={28} className="mr-2" /> {prizePool} HIVE
           </span>
+        </div>
+
+        <div className="mb-10 max-w-xl mx-auto px-4 rounded-2xl border border-cyan-200 dark:border-cyan-500/25 bg-cyan-50/90 dark:bg-cyan-500/10 py-4 text-left text-sm sm:text-base text-slate-700 dark:text-gray-300">
+          <p className="font-bold text-slate-800 dark:text-white mb-1">Paid by @{HIVE_BANK_ACCOUNT}</p>
+          <p className="mb-2">
+            Your prize was staked to the HiveClash bank when the room was created. The operator sends winnings from{' '}
+            <a
+              href={`https://hiveblocks.io/@${HIVE_BANK_ACCOUNT}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cyan-600 dark:text-cyan-400 font-black hover:underline"
+            >
+              @{HIVE_BANK_ACCOUNT}
+            </a>
+            {' '}— look for a transfer matching your game (memo includes your room PIN).
+          </p>
+          <p className="text-xs text-slate-500 dark:text-gray-500">
+            Payouts are processed off-chain by the bank; contact HiveClash support if you do not receive HIVE after winning.
+          </p>
+          {gameId ? (
+            <p className="mt-3 text-xs font-mono text-slate-600 dark:text-gray-400">
+              Game memo reference: <span className="font-black">hiveclash prize {gameId}</span>
+            </p>
+          ) : null}
         </div>
         
         <div className="w-full max-w-2xl space-y-5 px-2">
@@ -1061,6 +1519,7 @@ export default function App() {
               setPlayers([]);
               setViewMode('player');
               setGameId('');
+              setActiveQuiz([]);
             }}
             className="flex items-center justify-center w-full sm:w-auto bg-white dark:bg-white/10 text-slate-900 dark:text-white px-8 sm:px-10 py-4 sm:py-5 rounded-full font-black text-lg sm:text-xl hover:bg-gray-100 dark:hover:bg-white/20 hover:scale-105 transition-all border border-gray-200 dark:border-white/10 shadow-lg dark:shadow-[0_0_30px_rgba(255,255,255,0.3)]"
           >
@@ -1088,33 +1547,57 @@ export default function App() {
         </div>
         
         <h2 className="text-3xl font-black text-center text-slate-900 dark:text-white mb-2">Hive Keychain</h2>
-        <p className="text-center text-gray-500 dark:text-gray-400 mb-8 font-medium">Authenticate securely to join Web3 trivia.</p>
+        <p className="text-center text-gray-500 dark:text-gray-400 mb-4 font-medium">
+          Sign a short message with your posting key. No transaction is broadcast.
+        </p>
+
+        {keychainInstalled === false && (
+          <div className="mb-6 rounded-2xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100 font-medium text-center">
+            <p className="mb-2">The Hive Keychain extension is not available in this browser.</p>
+            <a
+              href="https://hive-keychain.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center font-bold text-amber-700 dark:text-amber-300 hover:underline"
+            >
+              <ExternalLink size={16} className="mr-1.5 shrink-0" />
+              Get Hive Keychain
+            </a>
+          </div>
+        )}
+        {keychainInstalled === null && (
+          <p className="text-center text-gray-400 dark:text-gray-500 text-sm mb-6">Looking for the Keychain extension…</p>
+        )}
 
         <div className="space-y-6">
           <div className="relative">
             <User className="absolute left-5 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500" size={20} />
             <input 
               type="text" 
-              placeholder="Your Hive Username"
+              placeholder="username (e.g. hiveio)"
               value={loginInput}
               onChange={(e) => setLoginInput(e.target.value.toLowerCase())}
               disabled={isLoggingIn}
               className="w-full pl-14 pr-5 py-4 rounded-xl bg-gray-50 dark:bg-black border border-gray-300 dark:border-white/10 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 focus:outline-none text-xl font-bold lowercase disabled:opacity-50 transition-all text-slate-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-600"
-              onKeyDown={(e) => e.key === 'Enter' && handleKeychainLogin()}
+              onKeyDown={(e) => e.key === 'Enter' && !isLoggingIn && handleKeychainLogin()}
             />
           </div>
 
           <button 
             onClick={handleKeychainLogin}
-            disabled={!loginInput.trim() || isLoggingIn}
+            disabled={
+              !loginInput.trim() ||
+              isLoggingIn ||
+              keychainInstalled === false
+            }
             className="w-full bg-rose-600 text-white py-4 rounded-xl font-black text-xl hover:bg-rose-500 disabled:bg-gray-300 dark:disabled:bg-zinc-800 disabled:text-gray-500 transition-all flex justify-center items-center shadow-lg dark:shadow-[0_0_20px_rgba(225,29,72,0.4)] disabled:shadow-none border border-rose-500/50 disabled:border-transparent"
           >
             {isLoggingIn ? (
               <>
-                <Loader2 className="animate-spin mr-3" size={24} /> Awaiting Approval...
+                <Loader2 className="animate-spin mr-3" size={24} /> Approve in Keychain…
               </>
             ) : (
-              "Sign In"
+              "Sign with Keychain"
             )}
           </button>
         </div>
