@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon } from 'lucide-react';
+import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
 const QUESTIONS = [
@@ -118,6 +118,19 @@ export default function App() {
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [loginInput, setLoginInput] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [keychainInstalled, setKeychainInstalled] = useState(null);
+
+  useEffect(() => {
+    if (!isLoginModalOpen) return;
+    let cancelled = false;
+    (async () => {
+      const { KeychainSDK } = await import('keychain-sdk');
+      const keychain = new KeychainSDK(window);
+      const ok = await keychain.isKeychainInstalled();
+      if (!cancelled) setKeychainInstalled(ok);
+    })();
+    return () => { cancelled = true; };
+  }, [isLoginModalOpen]);
 
   // --- LOGIC ---
   const addLog = (message) => {
@@ -129,18 +142,53 @@ export default function App() {
     setTimeout(() => setNotification(''), 4000);
   };
 
-  const handleKeychainLogin = () => {
-    if (!loginInput.trim()) return;
+  const normalizeHiveUsername = (raw) =>
+    raw.trim().toLowerCase().replace(/^@+/, '');
+
+  const handleKeychainLogin = async () => {
+    const user = normalizeHiveUsername(loginInput);
+    if (!user) return;
+
     setIsLoggingIn(true);
-    
-    // Simulate Hive Keychain extension pop-up delay
-    setTimeout(() => {
-      setUsername(loginInput.toLowerCase());
-      setIsLoggingIn(false);
+    try {
+      const { KeychainSDK } = await import('keychain-sdk');
+      const keychain = new KeychainSDK(window);
+      const installed = await keychain.isKeychainInstalled();
+      if (!installed) {
+        triggerNotification('Hive Keychain not found. Install the browser extension from hive-keychain.com');
+        return;
+      }
+
+      const message = JSON.stringify({
+        app: 'hiveclash',
+        ts: Date.now(),
+        nonce: typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      });
+
+      await keychain.login({
+        username: user,
+        message,
+        method: 'Posting',
+        title: 'HiveClash — Sign in',
+      });
+
+      setUsername(user);
       setIsLoginModalOpen(false);
-      addLog(`@${loginInput.toLowerCase()} authenticated via Hive Keychain`);
+      addLog(`@${user} authenticated via Hive Keychain`);
       setLoginInput('');
-    }, 1500);
+    } catch (err) {
+      const msg =
+        err?.message ||
+        err?.error ||
+        (typeof err === 'string' ? err : null) ||
+        'Login failed or was cancelled in Keychain.';
+      triggerNotification(String(msg));
+      console.error(err);
+    } finally {
+      setIsLoggingIn(false);
+    }
   };
 
   const handleLogout = () => {
@@ -1088,33 +1136,58 @@ export default function App() {
         </div>
         
         <h2 className="text-3xl font-black text-center text-slate-900 dark:text-white mb-2">Hive Keychain</h2>
-        <p className="text-center text-gray-500 dark:text-gray-400 mb-8 font-medium">Authenticate securely to join Web3 trivia.</p>
+        <p className="text-center text-gray-500 dark:text-gray-400 mb-4 font-medium">
+          Sign a short message with your posting key. No transaction is broadcast.
+        </p>
+
+        {keychainInstalled === false && (
+          <div className="mb-6 rounded-2xl border border-amber-300 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100 font-medium text-center">
+            <p className="mb-2">The Hive Keychain extension is not available in this browser.</p>
+            <a
+              href="https://hive-keychain.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center font-bold text-amber-700 dark:text-amber-300 hover:underline"
+            >
+              <ExternalLink size={16} className="mr-1.5 shrink-0" />
+              Get Hive Keychain
+            </a>
+          </div>
+        )}
+        {keychainInstalled === null && (
+          <p className="text-center text-gray-400 dark:text-gray-500 text-sm mb-6">Checking for Keychain…</p>
+        )}
 
         <div className="space-y-6">
           <div className="relative">
             <User className="absolute left-5 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500" size={20} />
             <input 
               type="text" 
-              placeholder="Your Hive Username"
+              placeholder="username (e.g. hiveio)"
               value={loginInput}
               onChange={(e) => setLoginInput(e.target.value.toLowerCase())}
               disabled={isLoggingIn}
               className="w-full pl-14 pr-5 py-4 rounded-xl bg-gray-50 dark:bg-black border border-gray-300 dark:border-white/10 focus:border-rose-500 focus:ring-2 focus:ring-rose-500/20 focus:outline-none text-xl font-bold lowercase disabled:opacity-50 transition-all text-slate-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-600"
-              onKeyDown={(e) => e.key === 'Enter' && handleKeychainLogin()}
+              onKeyDown={(e) => e.key === 'Enter' && !isLoggingIn && handleKeychainLogin()}
             />
           </div>
 
           <button 
             onClick={handleKeychainLogin}
-            disabled={!loginInput.trim() || isLoggingIn}
+            disabled={
+              !loginInput.trim() ||
+              isLoggingIn ||
+              keychainInstalled === false ||
+              keychainInstalled === null
+            }
             className="w-full bg-rose-600 text-white py-4 rounded-xl font-black text-xl hover:bg-rose-500 disabled:bg-gray-300 dark:disabled:bg-zinc-800 disabled:text-gray-500 transition-all flex justify-center items-center shadow-lg dark:shadow-[0_0_20px_rgba(225,29,72,0.4)] disabled:shadow-none border border-rose-500/50 disabled:border-transparent"
           >
             {isLoggingIn ? (
               <>
-                <Loader2 className="animate-spin mr-3" size={24} /> Awaiting Approval...
+                <Loader2 className="animate-spin mr-3" size={24} /> Approve in Keychain…
               </>
             ) : (
-              "Sign In"
+              "Sign with Keychain"
             )}
           </button>
         </div>
