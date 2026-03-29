@@ -1177,25 +1177,26 @@ export default function App() {
         {/* Main Content Area */}
         <div className="flex-1 flex flex-col items-center justify-center z-10 w-full max-w-7xl mx-auto">
           
-          {/* Question Text (Host Only) */}
-          {isHostView && (
-            <div className="w-full text-center mb-8 sm:mb-16 transform hover:scale-105 transition-transform duration-500 px-4">
-              <h2 className="text-3xl sm:text-5xl md:text-7xl font-black text-slate-900 dark:text-white leading-tight drop-shadow-sm dark:drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]">
-                {q.text}
-              </h2>
-            </div>
-          )}
-
-          {/* Player Instructions (Player Only) */}
-          {!isHostView && gameState === 'playing' && selectedAnswer === null && (
-             <div className="mb-6 sm:mb-12 text-xl sm:text-4xl font-black text-gray-500 dark:text-gray-400 animate-pulse flex flex-col items-center text-center">
-               <MonitorPlay className="mb-3 sm:mb-6 text-gray-400 dark:text-gray-600" size={56} />
-               Eyes on the big screen!
-             </div>
-          )}
+          {/* Question (host + players — everyone needs the prompt on their device) */}
+          <div className={`w-full text-center px-4 ${isHostView ? 'mb-8 sm:mb-16' : 'mb-6 sm:mb-10'}`}>
+            <h2
+              className={`font-black text-slate-900 dark:text-white leading-tight drop-shadow-sm dark:drop-shadow-[0_0_15px_rgba(255,255,255,0.2)] ${
+                isHostView
+                  ? 'text-3xl sm:text-5xl md:text-7xl transform hover:scale-105 transition-transform duration-500'
+                  : 'text-xl sm:text-3xl md:text-4xl'
+              }`}
+            >
+              {q.text}
+            </h2>
+            {!isHostView && gameState === 'playing' && selectedAnswer === null && (
+              <p className="mt-4 text-sm sm:text-base font-bold text-gray-500 dark:text-gray-400">
+                Tap the correct answer below
+              </p>
+            )}
+          </div>
 
           {/* Answers Grid */}
-          <div className={`grid gap-4 sm:gap-6 w-full ${isBoolean ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl' : 'grid-cols-2 max-w-6xl'}`}>
+          <div className={`grid gap-4 sm:gap-6 w-full ${isBoolean ? 'grid-cols-1 sm:grid-cols-2 max-w-4xl' : 'grid-cols-1 sm:grid-cols-2 max-w-6xl'}`}>
             {options.map((opt, idx) => {
               const Icon = icons[idx];
               const isSelected = selectedAnswer === idx;
@@ -1203,7 +1204,12 @@ export default function App() {
               const isCorrect = isRevealing && q.correct === idx;
               const isWrongSelection = isRevealing && isSelected && !isCorrect;
 
-              let btnClass = `${colors[idx]} text-white p-6 sm:p-16 rounded-3xl flex items-center justify-center transition-all cursor-pointer relative overflow-hidden min-h-[140px] sm:min-h-0 `;
+              let btnClass = `${colors[idx]} text-white rounded-3xl flex transition-all cursor-pointer relative overflow-hidden `;
+              if (isHostView) {
+                btnClass += 'p-6 sm:p-16 items-center justify-center min-h-[140px] sm:min-h-0 ';
+              } else {
+                btnClass += 'p-5 sm:p-8 items-center justify-center min-h-[120px] sm:min-h-[140px] ';
+              }
               
               if (isRevealing) {
                 btnClass += isCorrect ? " ring-4 sm:ring-8 ring-white z-10 scale-105 brightness-125" : " opacity-30 grayscale scale-95";
@@ -1222,19 +1228,28 @@ export default function App() {
                 >
                   <div className="absolute inset-0 bg-white/10 opacity-0 hover:opacity-100 transition-opacity"></div>
                   
-                  {/* The Shape Icon is huge on Player view, smaller on Host view */}
-                  <div className={`flex items-center w-full ${isHostView ? 'justify-start space-x-5 sm:space-x-8' : 'justify-center'} relative z-10`}>
+                  <div
+                    className={`relative z-10 flex w-full gap-3 sm:gap-5 ${
+                      isHostView
+                        ? 'flex-row items-center justify-start'
+                        : 'flex-col sm:flex-row items-center justify-center text-center sm:text-left'
+                    }`}
+                  >
                     <Icon 
-                      size={isHostView ? (window.innerWidth < 640 ? 36 : 64) : (window.innerWidth < 640 ? 64 : 120)} 
+                      size={isHostView ? (window.innerWidth < 640 ? 36 : 64) : (window.innerWidth < 640 ? 40 : 56)} 
                       strokeWidth={isHostView ? 3 : 2} 
-                      className={isHostView ? "opacity-90 shrink-0" : "opacity-100 drop-shadow-md dark:drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]"} 
+                      className={`shrink-0 ${isHostView ? 'opacity-90' : 'opacity-100 drop-shadow-md dark:drop-shadow-[0_0_20px_rgba(255,255,255,0.5)]'}`} 
                       fill={!isHostView ? "currentColor" : "none"}
                     />
-                    
-                    {/* Text only shows on Host View */}
-                    {isHostView && (
-                      <span className="text-2xl sm:text-4xl md:text-5xl font-bold text-left leading-tight drop-shadow-lg">{opt}</span>
-                    )}
+                    <span
+                      className={`font-bold leading-snug break-words drop-shadow-lg ${
+                        isHostView
+                          ? 'text-2xl sm:text-4xl md:text-5xl text-left'
+                          : 'text-lg sm:text-2xl md:text-3xl'
+                      }`}
+                    >
+                      {opt}
+                    </span>
                   </div>
 
                   {/* Feedback Overlays for Player */}
