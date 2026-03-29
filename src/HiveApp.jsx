@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
 import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
@@ -125,6 +126,7 @@ export default function App() {
     const detect = () => typeof window !== 'undefined' && !!window.hive_keychain;
     setKeychainInstalled(detect());
     const retry = setTimeout(() => setKeychainInstalled(detect()), 500);
+    void import('@hiveio/dhive');
     return () => clearTimeout(retry);
   }, [isLoginModalOpen]);
 
@@ -141,52 +143,34 @@ export default function App() {
   const normalizeHiveUsername = (raw) =>
     raw.trim().toLowerCase().replace(/^@+/, '');
 
-  const handleKeychainLogin = async () => {
+  const handleKeychainLogin = () => {
     const user = normalizeHiveUsername(loginInput);
     if (!user) return;
 
-    setIsLoggingIn(true);
-    try {
-      if (typeof window === 'undefined' || !window.hive_keychain) {
-        triggerNotification('Hive Keychain not found. Install the browser extension from hive-keychain.com');
-        return;
-      }
-
-      const { KeychainSDK } = await import('keychain-sdk');
-      const keychain = new KeychainSDK(window);
-      // SDK handshake can hang if the extension never calls back; skip it when the API is already injected.
-      keychain.isKeychainInstalled = () => Promise.resolve(!!window.hive_keychain);
-
-      const message = JSON.stringify({
-        app: 'hiveclash',
-        ts: Date.now(),
-        nonce: typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      });
-
-      await keychain.login({
-        username: user,
-        message,
-        method: 'Posting',
-        title: 'HiveClash — Sign in',
-      });
-
-      setUsername(user);
-      setIsLoginModalOpen(false);
-      addLog(`@${user} authenticated via Hive Keychain`);
-      setLoginInput('');
-    } catch (err) {
-      const msg =
-        err?.message ||
-        err?.error ||
-        (typeof err === 'string' ? err : null) ||
-        'Login failed or was cancelled in Keychain.';
-      triggerNotification(String(msg));
-      console.error(err);
-    } finally {
-      setIsLoggingIn(false);
+    if (typeof window === 'undefined' || !window.hive_keychain?.requestSignBuffer) {
+      triggerNotification('Hive Keychain not found. Install the browser extension from hive-keychain.com');
+      return;
     }
+
+    setIsLoggingIn(true);
+    // No await before Keychain: Chromium drops user activation after async gaps, which blocks the extension UI.
+    loginWithHiveKeychainPostingKey(user, 'HiveClash — Sign in')
+      .then(() => {
+        setUsername(user);
+        setIsLoginModalOpen(false);
+        addLog(`@${user} authenticated via Hive Keychain`);
+        setLoginInput('');
+      })
+      .catch((err) => {
+        const msg =
+          err?.message ||
+          err?.error ||
+          (typeof err === 'string' ? err : null) ||
+          'Login failed or was cancelled in Keychain.';
+        triggerNotification(String(msg));
+        console.error(err);
+      })
+      .finally(() => setIsLoggingIn(false));
   };
 
   const handleLogout = () => {
