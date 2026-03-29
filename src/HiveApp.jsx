@@ -122,14 +122,10 @@ export default function App() {
 
   useEffect(() => {
     if (!isLoginModalOpen) return;
-    let cancelled = false;
-    (async () => {
-      const { KeychainSDK } = await import('keychain-sdk');
-      const keychain = new KeychainSDK(window);
-      const ok = await keychain.isKeychainInstalled();
-      if (!cancelled) setKeychainInstalled(ok);
-    })();
-    return () => { cancelled = true; };
+    const detect = () => typeof window !== 'undefined' && !!window.hive_keychain;
+    setKeychainInstalled(detect());
+    const retry = setTimeout(() => setKeychainInstalled(detect()), 500);
+    return () => clearTimeout(retry);
   }, [isLoginModalOpen]);
 
   // --- LOGIC ---
@@ -151,13 +147,15 @@ export default function App() {
 
     setIsLoggingIn(true);
     try {
-      const { KeychainSDK } = await import('keychain-sdk');
-      const keychain = new KeychainSDK(window);
-      const installed = await keychain.isKeychainInstalled();
-      if (!installed) {
+      if (typeof window === 'undefined' || !window.hive_keychain) {
         triggerNotification('Hive Keychain not found. Install the browser extension from hive-keychain.com');
         return;
       }
+
+      const { KeychainSDK } = await import('keychain-sdk');
+      const keychain = new KeychainSDK(window);
+      // SDK handshake can hang if the extension never calls back; skip it when the API is already injected.
+      keychain.isKeychainInstalled = () => Promise.resolve(!!window.hive_keychain);
 
       const message = JSON.stringify({
         app: 'hiveclash',
@@ -1155,7 +1153,7 @@ export default function App() {
           </div>
         )}
         {keychainInstalled === null && (
-          <p className="text-center text-gray-400 dark:text-gray-500 text-sm mb-6">Checking for Keychain…</p>
+          <p className="text-center text-gray-400 dark:text-gray-500 text-sm mb-6">Looking for the Keychain extension…</p>
         )}
 
         <div className="space-y-6">
@@ -1177,8 +1175,7 @@ export default function App() {
             disabled={
               !loginInput.trim() ||
               isLoggingIn ||
-              keychainInstalled === false ||
-              keychainInstalled === null
+              keychainInstalled === false
             }
             className="w-full bg-rose-600 text-white py-4 rounded-xl font-black text-xl hover:bg-rose-500 disabled:bg-gray-300 dark:disabled:bg-zinc-800 disabled:text-gray-500 transition-all flex justify-center items-center shadow-lg dark:shadow-[0_0_20px_rgba(225,29,72,0.4)] disabled:shadow-none border border-rose-500/50 disabled:border-transparent"
           >
