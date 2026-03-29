@@ -47,6 +47,10 @@ const normalizeHostQuiz = (questions) =>
 
 const HIVECLASH_USER_KEY = 'hiveclash.hiveUsername';
 
+/** Join links follow whatever host opened the app (Railway, future hiveclash.app, localhost). */
+const getJoinGameUrl = (pin) =>
+  `${typeof window !== 'undefined' ? window.location.origin : ''}/join/${pin}`;
+
 const normalizeHiveUsername = (raw) =>
   raw.trim().toLowerCase().replace(/^@+/, '');
 
@@ -405,7 +409,7 @@ export default function App() {
   };
 
   const copyToClipboard = () => {
-    const url = `https://hiveclash.app/join/${gameId}`;
+    const url = getJoinGameUrl(gameId);
     const textArea = document.createElement("textarea");
     textArea.value = url;
     document.body.appendChild(textArea);
@@ -1067,7 +1071,7 @@ export default function App() {
 
   const renderWaitingRoom = () => {
     const isHostView = viewMode === 'host';
-    const gameUrl = `https://hiveclash.app/join/${gameId}`;
+    const gameUrl = getJoinGameUrl(gameId);
     const formattedId = gameId ? `${gameId.slice(0,3)} ${gameId.slice(3,6)}` : '000 000';
 
     return (
