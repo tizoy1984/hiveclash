@@ -18,6 +18,6 @@ export default defineConfig({
     global: 'globalThis',
   },
   optimizeDeps: {
-    include: ['buffer', 'stream-browserify', 'events', 'keychain-sdk'],
+    include: ['buffer', 'stream-browserify', 'events', '@hiveio/dhive'],
   },
 })
