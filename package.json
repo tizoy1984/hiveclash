@@ -2,18 +2,30 @@
   "name": "hiveclash",
   "version": "1.0.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tizoy1984/hiveclash.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tizoy1984/hiveclash/issues"
+  },
   "dependencies": {
+    "@hiveio/dhive": "^1.3.5",
     "@supabase/supabase-js": "^2.45.0",
     "@vitejs/plugin-react": "^4.2.0",
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
     "lucide-react": "^0.344.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "serve": "^14.2.6",
+    "stream-browserify": "^3.0.0",
     "vite": "^5.1.0"
   },
   "scripts": {
     "dev": "vite",
     "build": "node node_modules/vite/bin/vite.js build",
     "preview": "node node_modules/vite/bin/vite.js preview",
-    "start": "node node_modules/vite/bin/vite.js preview --host 0.0.0.0 --port $PORT"
+    "start": "serve dist -s"
   }
 }
