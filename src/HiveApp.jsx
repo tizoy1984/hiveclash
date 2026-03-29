@@ -1,14 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
-import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink } from 'lucide-react';
+import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
-const QUESTIONS = [
+const DEFAULT_DEMO_QUESTIONS = [
   {
     id: 1,
     text: "What is the block time of the Hive Blockchain?",
     options: ["10 Minutes", "3 Seconds", "12 Seconds", "1 Minute"],
-    correct: 1, 
+    correct: 1,
     type: "multiple"
   },
   {
@@ -26,6 +26,41 @@ const QUESTIONS = [
     type: "multiple"
   }
 ];
+
+const makeDraftQuestion = () => ({
+  id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+  text: "",
+  type: "multiple",
+  options: ["", "", "", ""],
+  correct: 0
+});
+
+const normalizeHostQuiz = (questions) =>
+  questions.map((q, i) => ({
+    id: i + 1,
+    text: q.text.trim(),
+    type: q.type,
+    correct: q.correct,
+    options: q.type === "boolean" ? ["True", "False"] : q.options.map((o) => String(o).trim())
+  }));
+
+const validateHostQuiz = (questions) => {
+  if (!questions.length) return "Add at least one question.";
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    if (!q.text?.trim()) return `Question ${i + 1}: enter the question text.`;
+    if (q.type === "boolean") {
+      if (q.correct !== 0 && q.correct !== 1)
+        return `Question ${i + 1}: mark whether True or False is correct.`;
+    } else {
+      if (!q.options || q.options.some((o) => !String(o).trim()))
+        return `Question ${i + 1}: fill in all four answer choices.`;
+      if (q.correct < 0 || q.correct > 3)
+        return `Question ${i + 1}: select which choice is correct.`;
+    }
+  }
+  return null;
+};
 
 // NEON GLOW COLORS
 const COLORS = [
@@ -114,6 +149,8 @@ export default function App() {
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
+  const [hostQuizQuestions, setHostQuizQuestions] = useState(() => [makeDraftQuestion()]);
+  const [activeQuiz, setActiveQuiz] = useState([]);
 
   // Login State
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -186,6 +223,14 @@ export default function App() {
     setGameId(game.id);
     setPrizePool(game.prize + 1); // Mock adding buy-in
     setViewMode('player');
+    setActiveQuiz(
+      (game.questions?.length ? game.questions : DEFAULT_DEMO_QUESTIONS).map((q, i) => ({
+        ...q,
+        id: q.id ?? i + 1
+      }))
+    );
+    setCurrentQIndex(0);
+    setSelectedAnswer(null);
     
     // Simulate other players already in the room
     const mockRoomPlayers = [...MOCK_USERS].sort(() => 0.5 - Math.random()).slice(0, Math.min(game.players, 5));
@@ -231,6 +276,13 @@ export default function App() {
       return;
     }
 
+    const quizErr = validateHostQuiz(hostQuizQuestions);
+    if (quizErr) {
+      triggerNotification(quizErr);
+      return;
+    }
+
+    const normalizedQuiz = normalizeHostQuiz(hostQuizQuestions);
     const newId = Math.floor(100000 + Math.random() * 900000).toString(); // Generate random 6-digit PIN
 
     if (isScheduling) {
@@ -245,7 +297,8 @@ export default function App() {
         players: 0,
         maxPlayers: 50,
         interested: [],
-        image: hostImageUrl || DEFAULT_IMAGE
+        image: hostImageUrl || DEFAULT_IMAGE,
+        questions: normalizedQuiz
       };
       setGames(prev => [...prev, newGame]);
       triggerNotification("Game scheduled successfully!");
@@ -256,12 +309,21 @@ export default function App() {
       setPrizePool(hostFunding);
       setViewMode('host');
       setPlayers([]);
+      setActiveQuiz(normalizedQuiz);
+      setCurrentQIndex(0);
+      setSelectedAnswer(null);
       addLog(`@${username} hosted game ${newId} and funded ${hostFunding} HIVE.`);
       setGameState('waitingRoom');
     }
   };
 
   const beginTrivia = () => {
+    if (!activeQuiz.length) {
+      triggerNotification("This room has no questions yet.");
+      return;
+    }
+    setCurrentQIndex(0);
+    setSelectedAnswer(null);
     setGameState('playing');
     setTimeLeft(15);
     addLog(`Host started the trivia!`);
@@ -308,7 +370,9 @@ export default function App() {
       setGameState('revealing');
       addLog(`Host revealed salt. Indexer verifying...`);
       
-      const isCorrect = selectedAnswer === QUESTIONS[currentQIndex].correct;
+      const deck = activeQuiz;
+      const currentQ = deck[currentQIndex];
+      const isCorrect = currentQ && selectedAnswer === currentQ.correct;
       if (isCorrect) {
         const timeBonus = Math.floor((timeLeft / 15) * 500);
         const streakBonus = streak * 100;
@@ -322,7 +386,7 @@ export default function App() {
 
       // Auto-advance
       setTimeout(() => {
-        if (currentQIndex < QUESTIONS.length - 1) {
+        if (currentQIndex < deck.length - 1) {
           setCurrentQIndex(prev => prev + 1);
           setSelectedAnswer(null);
           setTimeLeft(15);
@@ -334,7 +398,7 @@ export default function App() {
       }, 5000);
     }
     return () => clearInterval(timer);
-  }, [gameState, timeLeft, selectedAnswer, currentQIndex]);
+  }, [gameState, timeLeft, selectedAnswer, currentQIndex, activeQuiz]);
 
   // --- RENDERERS ---
 
@@ -389,6 +453,7 @@ export default function App() {
                   setHostImageUrl('');
                   setHostFunding(50);
                   setIsScheduling(false);
+                  setHostQuizQuestions([makeDraftQuestion()]);
                   setGameState('hostSetup');
                 }} 
                 className="bg-gradient-to-r from-fuchsia-600 to-purple-600 hover:from-fuchsia-500 hover:to-purple-500 px-4 sm:px-6 py-2.5 rounded-full font-bold flex items-center transition-all shadow-md dark:shadow-[0_0_20px_rgba(192,38,211,0.4)] dark:hover:shadow-[0_0_30px_rgba(192,38,211,0.6)] text-white border border-fuchsia-400/30"
@@ -513,7 +578,7 @@ export default function App() {
               {liveGames.length === 0 && (
                 <div className="col-span-full text-center py-16 bg-gray-100 dark:bg-zinc-900/30 rounded-3xl border border-gray-300 dark:border-white/5 border-dashed">
                   <p className="text-slate-500 dark:text-gray-500 font-bold text-xl mb-4">No live games right now.</p>
-                  <button onClick={() => setGameState('hostSetup')} className="text-fuchsia-600 dark:text-fuchsia-400 hover:text-fuchsia-700 dark:hover:text-fuchsia-300 font-bold flex items-center justify-center mx-auto transition-colors">
+                  <button onClick={() => { setHostQuizQuestions([makeDraftQuestion()]); setGameState('hostSetup'); }} className="text-fuchsia-600 dark:text-fuchsia-400 hover:text-fuchsia-700 dark:hover:text-fuchsia-300 font-bold flex items-center justify-center mx-auto transition-colors">
                     <Plus size={18} className="mr-1" /> Host the first one!
                   </button>
                 </div>
@@ -641,7 +706,7 @@ export default function App() {
         <ChevronLeft className="mr-1" /> Back to Dashboard
       </button>
 
-      <div className="bg-white/90 dark:bg-zinc-900/80 backdrop-blur-xl rounded-3xl p-8 sm:p-10 shadow-2xl dark:shadow-[0_0_50px_rgba(192,38,211,0.15)] w-full max-w-lg text-center border border-gray-200 dark:border-white/10 relative overflow-hidden">
+      <div className="bg-white/90 dark:bg-zinc-900/80 backdrop-blur-xl rounded-3xl p-8 sm:p-10 shadow-2xl dark:shadow-[0_0_50px_rgba(192,38,211,0.15)] w-full max-w-2xl text-center border border-gray-200 dark:border-white/10 relative overflow-hidden max-h-[90vh] overflow-y-auto">
         {/* Decorative elements (visible mainly in dark mode) */}
         <div className="absolute -top-20 -right-20 w-40 h-40 bg-fuchsia-500/20 blur-[50px] rounded-full hidden dark:block"></div>
         <div className="absolute -bottom-20 -left-20 w-40 h-40 bg-cyan-500/20 blur-[50px] rounded-full hidden dark:block"></div>
@@ -698,6 +763,174 @@ export default function App() {
                 />
                 <span className="absolute right-5 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 font-bold uppercase tracking-widest text-sm">HIVE</span>
               </div>
+            </div>
+
+            {/* Custom quiz */}
+            <div className="pt-4 border-t border-gray-200 dark:border-white/10 text-left">
+              <label className="flex items-center text-xs font-bold text-gray-500 mb-3 uppercase tracking-widest pl-1">
+                <ListOrdered size={16} className="mr-2 text-fuchsia-500 shrink-0" />
+                Questions and answers
+              </label>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mb-4 pl-1">
+                Build your trivia. Mark the correct answer for each question.
+              </p>
+              <div className="space-y-5 max-h-[min(420px,50vh)] overflow-y-auto pr-1">
+                {hostQuizQuestions.map((hq, qi) => (
+                  <div
+                    key={hq.id}
+                    className="rounded-2xl border border-gray-200 dark:border-white/10 p-4 sm:p-5 bg-gray-50/80 dark:bg-black/30 space-y-3"
+                  >
+                    <div className="flex justify-between items-start gap-2">
+                      <span className="font-black text-slate-800 dark:text-white">Question {qi + 1}</span>
+                      {hostQuizQuestions.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHostQuizQuestions((prev) => prev.filter((_, i) => i !== qi))
+                          }
+                          className="p-2 rounded-lg text-rose-500 hover:bg-rose-500/10 transition-colors"
+                          title="Remove question"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
+                    </div>
+                    <textarea
+                      value={hq.text}
+                      onChange={(e) =>
+                        setHostQuizQuestions((prev) =>
+                          prev.map((q, i) => (i === qi ? { ...q, text: e.target.value } : q))
+                        )
+                      }
+                      placeholder="Ask something players should answer…"
+                      rows={2}
+                      className="w-full px-4 py-3 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-fuchsia-500 focus:ring-2 focus:ring-fuchsia-500/20 focus:outline-none font-bold text-slate-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-600 resize-y min-h-[72px]"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setHostQuizQuestions((prev) =>
+                            prev.map((q, i) =>
+                              i === qi
+                                ? {
+                                    ...q,
+                                    type: "multiple",
+                                    options: ["", "", "", ""],
+                                    correct: 0
+                                  }
+                                : q
+                            )
+                          )
+                        }
+                        className={`px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-all ${
+                          hq.type === "multiple"
+                            ? "bg-cyan-500 text-white shadow-md"
+                            : "bg-gray-200 dark:bg-white/10 text-slate-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-white/15"
+                        }`}
+                      >
+                        4 choices
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setHostQuizQuestions((prev) =>
+                            prev.map((q, i) =>
+                              i === qi
+                                ? {
+                                    ...q,
+                                    type: "boolean",
+                                    options: ["True", "False"],
+                                    correct: 0
+                                  }
+                                : q
+                            )
+                          )
+                        }
+                        className={`px-3 py-2 rounded-lg text-xs font-black uppercase tracking-wide transition-all ${
+                          hq.type === "boolean"
+                            ? "bg-fuchsia-600 text-white shadow-md"
+                            : "bg-gray-200 dark:bg-white/10 text-slate-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-white/15"
+                        }`}
+                      >
+                        True / False
+                      </button>
+                    </div>
+                    {hq.type === "multiple" ? (
+                      <div className="space-y-2">
+                        {hq.options.map((opt, oi) => (
+                          <div key={oi} className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name={`correct-${hq.id}`}
+                              checked={hq.correct === oi}
+                              onChange={() =>
+                                setHostQuizQuestions((prev) =>
+                                  prev.map((q, i) => (i === qi ? { ...q, correct: oi } : q))
+                                )
+                              }
+                              className="w-4 h-4 accent-cyan-600 shrink-0"
+                              title="Mark as correct"
+                            />
+                            <input
+                              type="text"
+                              value={opt}
+                              onChange={(e) =>
+                                setHostQuizQuestions((prev) =>
+                                  prev.map((q, i) =>
+                                    i === qi
+                                      ? {
+                                          ...q,
+                                          options: q.options.map((o, j) =>
+                                            j === oi ? e.target.value : o
+                                          )
+                                        }
+                                      : q
+                                  )
+                                )
+                              }
+                              placeholder={`Answer choice ${oi + 1}`}
+                              className="flex-1 min-w-0 px-4 py-2.5 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 focus:outline-none font-bold text-slate-900 dark:text-white text-sm"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row gap-3 sm:gap-6">
+                        {[
+                          { label: "True is correct", idx: 0 },
+                          { label: "False is correct", idx: 1 }
+                        ].map(({ label, idx }) => (
+                          <label
+                            key={idx}
+                            className="flex items-center gap-2 cursor-pointer font-bold text-slate-800 dark:text-gray-200 text-sm"
+                          >
+                            <input
+                              type="radio"
+                              name={`bool-correct-${hq.id}`}
+                              checked={hq.correct === idx}
+                              onChange={() =>
+                                setHostQuizQuestions((prev) =>
+                                  prev.map((q, i) => (i === qi ? { ...q, correct: idx } : q))
+                                )
+                              }
+                              className="w-4 h-4 accent-fuchsia-600"
+                            />
+                            {label}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setHostQuizQuestions((prev) => [...prev, makeDraftQuestion()])}
+                className="mt-4 w-full py-3 rounded-xl border-2 border-dashed border-fuchsia-300 dark:border-fuchsia-500/40 text-fuchsia-600 dark:text-fuchsia-400 font-bold hover:bg-fuchsia-50 dark:hover:bg-fuchsia-500/10 transition-colors flex items-center justify-center"
+              >
+                <Plus size={18} className="mr-2" /> Add question
+              </button>
             </div>
 
             {/* Timing Toggle */}
@@ -824,7 +1057,7 @@ export default function App() {
                 </h3>
                 <button 
                   onClick={beginTrivia}
-                  disabled={players.length === 0}
+                  disabled={players.length === 0 || !activeQuiz.length}
                   className="bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 disabled:from-gray-400 disabled:to-gray-500 dark:disabled:from-zinc-700 dark:disabled:to-zinc-800 disabled:opacity-50 text-white px-12 py-4 rounded-2xl font-black text-2xl shadow-lg dark:shadow-[0_0_20px_rgba(16,185,129,0.4)] disabled:shadow-none transition-all flex items-center w-full sm:w-auto justify-center border border-emerald-400/30 disabled:border-transparent"
                 >
                   <Play className="mr-3 fill-current" size={28} /> START GAME
@@ -880,7 +1113,14 @@ export default function App() {
   };
 
   const renderPlaying = () => {
-    const q = QUESTIONS[currentQIndex];
+    const q = activeQuiz[currentQIndex];
+    if (!q) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-black text-slate-600 dark:text-gray-400 font-bold p-6">
+          No questions loaded for this game.
+        </div>
+      );
+    }
     const isHostView = viewMode === 'host';
     const isBoolean = q.type === 'boolean';
     const options = q.options;
@@ -929,7 +1169,7 @@ export default function App() {
             </div>
           ) : (
             <div className="font-bold text-xs sm:text-xl bg-gray-100 dark:bg-black/50 px-4 py-2 sm:px-5 sm:py-3 rounded-xl border border-gray-200 dark:border-white/10 text-slate-700 dark:text-gray-300 tracking-wider">
-              Q <span className="text-cyan-600 dark:text-cyan-400 mx-1">{currentQIndex + 1}</span> / {QUESTIONS.length}
+              Q <span className="text-cyan-600 dark:text-cyan-400 mx-1">{currentQIndex + 1}</span> / {activeQuiz.length}
             </div>
           )}
         </div>
@@ -1091,6 +1331,7 @@ export default function App() {
               setPlayers([]);
               setViewMode('player');
               setGameId('');
+              setActiveQuiz([]);
             }}
             className="flex items-center justify-center w-full sm:w-auto bg-white dark:bg-white/10 text-slate-900 dark:text-white px-8 sm:px-10 py-4 sm:py-5 rounded-full font-black text-lg sm:text-xl hover:bg-gray-100 dark:hover:bg-white/20 hover:scale-105 transition-all border border-gray-200 dark:border-white/10 shadow-lg dark:shadow-[0_0_30px_rgba(255,255,255,0.3)]"
           >
