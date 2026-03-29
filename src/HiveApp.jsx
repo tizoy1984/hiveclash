@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
+import { stakePrizeToBank, HIVE_BANK_ACCOUNT } from './hiveKeychainBank';
 import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
@@ -168,6 +169,7 @@ export default function App() {
   const [loginInput, setLoginInput] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [keychainInstalled, setKeychainInstalled] = useState(null);
+  const [isStakingPrize, setIsStakingPrize] = useState(false);
 
   useEffect(() => {
     try {
@@ -296,13 +298,23 @@ export default function App() {
   };
 
   const startHosting = () => {
-    if (!username.trim() || hostFunding < 0) return;
+    if (!username.trim()) return;
     if (!hostGameTitle.trim()) {
       triggerNotification("Please give your game a title.");
       return;
     }
     if (isScheduling && (!scheduleDate || !scheduleTime)) {
       triggerNotification("Please select a date and time to schedule the game.");
+      return;
+    }
+    if (hostFunding <= 0 || Number.isNaN(Number(hostFunding))) {
+      triggerNotification(`Set a prize amount above 0 HIVE to stake to @${HIVE_BANK_ACCOUNT}.`);
+      return;
+    }
+    if (typeof window === 'undefined' || !window.hive_keychain?.requestTransfer) {
+      triggerNotification(
+        `Install Hive Keychain to send your prize stake to @${HIVE_BANK_ACCOUNT}.`,
+      );
       return;
     }
 
@@ -313,38 +325,58 @@ export default function App() {
     }
 
     const normalizedQuiz = normalizeHostQuiz(hostQuizQuestions);
-    const newId = Math.floor(100000 + Math.random() * 900000).toString(); // Generate random 6-digit PIN
+    const newId = Math.floor(100000 + Math.random() * 900000).toString();
+    const amountStr = Number(hostFunding).toFixed(3);
+    const memo = `hiveclash prize ${newId}`;
 
-    if (isScheduling) {
-      const newGame = {
-        id: newId,
-        status: 'scheduled',
-        host: username,
-        title: hostGameTitle,
-        prize: hostFunding,
-        date: scheduleDate,
-        time: scheduleTime,
-        players: 0,
-        maxPlayers: 50,
-        interested: [],
-        image: hostImageUrl || DEFAULT_IMAGE,
-        questions: normalizedQuiz
-      };
-      setGames(prev => [...prev, newGame]);
-      triggerNotification("Game scheduled successfully!");
-      addLog(`@${username} scheduled game ${newId} for ${scheduleDate} ${scheduleTime}.`);
-      setGameState('dashboard');
-    } else {
-      setGameId(newId);
-      setPrizePool(hostFunding);
-      setViewMode('host');
-      setPlayers([]);
-      setActiveQuiz(normalizedQuiz);
-      setCurrentQIndex(0);
-      setSelectedAnswer(null);
-      addLog(`@${username} hosted game ${newId} and funded ${hostFunding} HIVE.`);
-      setGameState('waitingRoom');
-    }
+    setIsStakingPrize(true);
+    stakePrizeToBank({
+      fromUsername: username,
+      amountFixed3: amountStr,
+      memo,
+    })
+      .then(() => {
+        addLog(
+          `@${username} staked ${amountStr} HIVE to @${HIVE_BANK_ACCOUNT} for game ${newId} (memo: ${memo}).`,
+        );
+        if (isScheduling) {
+          const newGame = {
+            id: newId,
+            status: 'scheduled',
+            host: username,
+            title: hostGameTitle,
+            prize: hostFunding,
+            date: scheduleDate,
+            time: scheduleTime,
+            players: 0,
+            maxPlayers: 50,
+            interested: [],
+            image: hostImageUrl || DEFAULT_IMAGE,
+            questions: normalizedQuiz,
+          };
+          setGames((prev) => [...prev, newGame]);
+          triggerNotification(`Scheduled! Prize is secured with @${HIVE_BANK_ACCOUNT}.`);
+          addLog(`@${username} scheduled game ${newId} for ${scheduleDate} ${scheduleTime}.`);
+          setGameState('dashboard');
+        } else {
+          setGameId(newId);
+          setPrizePool(hostFunding);
+          setViewMode('host');
+          setPlayers([]);
+          setActiveQuiz(normalizedQuiz);
+          setCurrentQIndex(0);
+          setSelectedAnswer(null);
+          addLog(`@${username} created room ${newId}; prize held by @${HIVE_BANK_ACCOUNT}.`);
+          setGameState('waitingRoom');
+        }
+      })
+      .catch((err) => {
+        triggerNotification(
+          err?.message || `Could not stake to @${HIVE_BANK_ACCOUNT}. Try again or cancel.`,
+        );
+        console.error(err);
+      })
+      .finally(() => setIsStakingPrize(false));
   };
 
   const beginTrivia = () => {
@@ -423,7 +455,7 @@ export default function App() {
           setGameState('playing');
         } else {
           setGameState('leaderboard');
-          addLog(`Game Over! Distributing Prize Pool...`);
+          addLog(`Game Over! Winner should receive ${prizePool} HIVE from @${HIVE_BANK_ACCOUNT}.`);
         }
       }, 5000);
     }
@@ -748,7 +780,10 @@ export default function App() {
             </div>
           </div>
           <h1 className="text-4xl font-black text-slate-900 dark:text-white mb-2 tracking-tight">Host a Game</h1>
-          <p className="text-slate-500 dark:text-gray-400 mb-8 font-medium">Set up your trivia room and fund the prize pool.</p>
+          <p className="text-slate-500 dark:text-gray-400 mb-4 font-medium">
+            Set up your room. When you create or schedule the game, you stake the prize in HIVE to the HiveClash bank —{' '}
+            <span className="text-cyan-600 dark:text-cyan-400 font-bold">@{HIVE_BANK_ACCOUNT}</span> — via Hive Keychain. The winner is paid from that bank.
+          </p>
           
           <div className="space-y-6 text-left">
             
@@ -781,15 +816,20 @@ export default function App() {
 
             {/* Prize Pool */}
             <div>
-              <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">Initial Prize Pool</label>
+              <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">Prize stake (sent to @{HIVE_BANK_ACCOUNT})</label>
+              <p className="text-xs text-slate-500 dark:text-gray-400 mb-2 pl-1">
+                You transfer this amount in Keychain when you tap Create Room / Schedule. Winners receive payouts from @{HIVE_BANK_ACCOUNT}.
+              </p>
               <div className="relative">
                 <Coins size={24} className="absolute left-5 top-1/2 transform -translate-y-1/2 text-amber-500 dark:drop-shadow-[0_0_8px_rgba(245,158,11,0.8)]" />
                 <input 
                   type="number" 
-                  min="0"
+                  min="0.001"
+                  step="0.001"
                   value={hostFunding}
                   onChange={(e) => setHostFunding(Number(e.target.value))}
-                  className="w-full pl-14 pr-20 py-4 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 focus:outline-none text-2xl font-black text-slate-900 dark:text-white transition-all shadow-sm dark:shadow-none"
+                  disabled={isStakingPrize}
+                  className="w-full pl-14 pr-20 py-4 rounded-xl bg-white dark:bg-black/50 border border-gray-300 dark:border-white/10 focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20 focus:outline-none text-2xl font-black text-slate-900 dark:text-white transition-all shadow-sm dark:shadow-none disabled:opacity-50"
                 />
                 <span className="absolute right-5 top-1/2 transform -translate-y-1/2 text-gray-400 dark:text-gray-500 font-bold uppercase tracking-widest text-sm">HIVE</span>
               </div>
@@ -1006,10 +1046,18 @@ export default function App() {
             
             <button 
               onClick={startHosting}
-              disabled={!username.trim() || hostFunding < 0}
+              disabled={!username.trim() || hostFunding <= 0 || isStakingPrize}
               className={`w-full text-white py-5 rounded-xl font-black text-2xl disabled:opacity-50 transition-all flex justify-center items-center mt-8 border ${isScheduling ? 'bg-gradient-to-r from-fuchsia-600 to-purple-600 border-fuchsia-400/30 shadow-md dark:hover:shadow-[0_0_30px_rgba(217,70,239,0.6)]' : 'bg-gradient-to-r from-cyan-600 to-blue-600 border-cyan-400/30 shadow-md dark:hover:shadow-[0_0_30px_rgba(6,182,212,0.6)]'}`}
             >
-              {isScheduling ? "Schedule Game" : "Create Room"}
+              {isStakingPrize ? (
+                <>
+                  <Loader2 className="animate-spin mr-3" size={28} /> Confirm stake in Keychain…
+                </>
+              ) : isScheduling ? (
+                `Stake & schedule (→ @${HIVE_BANK_ACCOUNT})`
+              ) : (
+                `Stake & create room (→ @${HIVE_BANK_ACCOUNT})`
+              )}
             </button>
           </div>
         </div>
@@ -1317,11 +1365,35 @@ export default function App() {
         
         <h1 className="text-5xl sm:text-8xl font-black mb-6 tracking-widest text-slate-900 dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-b dark:from-white dark:to-gray-400 drop-shadow-md dark:drop-shadow-[0_5px_5px_rgba(0,0,0,0.8)]">PODIUM</h1>
         
-        <div className="mb-12 sm:mb-16 inline-flex items-center bg-white dark:bg-black/50 px-8 sm:px-10 py-3 sm:py-4 rounded-full border border-amber-300 dark:border-amber-500/30 shadow-lg dark:shadow-[0_0_30px_rgba(245,158,11,0.15)]">
-          <span className="text-slate-600 dark:text-gray-400 font-bold text-sm sm:text-lg uppercase tracking-widest mr-4">Total Prize Distributed</span>
+        <div className="mb-8 inline-flex items-center bg-white dark:bg-black/50 px-8 sm:px-10 py-3 sm:py-4 rounded-full border border-amber-300 dark:border-amber-500/30 shadow-lg dark:shadow-[0_0_30px_rgba(245,158,11,0.15)]">
+          <span className="text-slate-600 dark:text-gray-400 font-bold text-sm sm:text-lg uppercase tracking-widest mr-4">Prize from bank</span>
           <span className="text-amber-500 dark:text-amber-400 font-black text-2xl sm:text-3xl flex items-center dark:drop-shadow-[0_0_10px_rgba(245,158,11,0.5)]">
             <Coins size={28} className="mr-2" /> {prizePool} HIVE
           </span>
+        </div>
+
+        <div className="mb-10 max-w-xl mx-auto px-4 rounded-2xl border border-cyan-200 dark:border-cyan-500/25 bg-cyan-50/90 dark:bg-cyan-500/10 py-4 text-left text-sm sm:text-base text-slate-700 dark:text-gray-300">
+          <p className="font-bold text-slate-800 dark:text-white mb-1">Paid by @{HIVE_BANK_ACCOUNT}</p>
+          <p className="mb-2">
+            Your prize was staked to the HiveClash bank when the room was created. The operator sends winnings from{' '}
+            <a
+              href={`https://hiveblocks.io/@${HIVE_BANK_ACCOUNT}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-cyan-600 dark:text-cyan-400 font-black hover:underline"
+            >
+              @{HIVE_BANK_ACCOUNT}
+            </a>
+            {' '}— look for a transfer matching your game (memo includes your room PIN).
+          </p>
+          <p className="text-xs text-slate-500 dark:text-gray-500">
+            Payouts are processed off-chain by the bank; contact HiveClash support if you do not receive HIVE after winning.
+          </p>
+          {gameId ? (
+            <p className="mt-3 text-xs font-mono text-slate-600 dark:text-gray-400">
+              Game memo reference: <span className="font-black">hiveclash prize {gameId}</span>
+            </p>
+          ) : null}
         </div>
         
         <div className="w-full max-w-2xl space-y-5 px-2">
