@@ -44,6 +44,17 @@ const normalizeHostQuiz = (questions) =>
     options: q.type === "boolean" ? ["True", "False"] : q.options.map((o) => String(o).trim())
   }));
 
+const HIVECLASH_USER_KEY = 'hiveclash.hiveUsername';
+
+const normalizeHiveUsername = (raw) =>
+  raw.trim().toLowerCase().replace(/^@+/, '');
+
+const isValidStoredHiveUsername = (s) =>
+  typeof s === 'string' &&
+  s.length >= 3 &&
+  s.length <= 16 &&
+  /^[a-z0-9.-]+$/.test(s);
+
 const validateHostQuiz = (questions) => {
   if (!questions.length) return "Add at least one question.";
   for (let i = 0; i < questions.length; i++) {
@@ -159,6 +170,18 @@ export default function App() {
   const [keychainInstalled, setKeychainInstalled] = useState(null);
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HIVECLASH_USER_KEY);
+      if (!raw) return;
+      const user = normalizeHiveUsername(raw);
+      if (isValidStoredHiveUsername(user)) setUsername(user);
+      else localStorage.removeItem(HIVECLASH_USER_KEY);
+    } catch {
+      /* private mode / blocked storage */
+    }
+  }, []);
+
+  useEffect(() => {
     if (!isLoginModalOpen) return;
     const detect = () => typeof window !== 'undefined' && !!window.hive_keychain;
     setKeychainInstalled(detect());
@@ -177,9 +200,6 @@ export default function App() {
     setTimeout(() => setNotification(''), 4000);
   };
 
-  const normalizeHiveUsername = (raw) =>
-    raw.trim().toLowerCase().replace(/^@+/, '');
-
   const handleKeychainLogin = () => {
     const user = normalizeHiveUsername(loginInput);
     if (!user) return;
@@ -194,6 +214,11 @@ export default function App() {
     loginWithHiveKeychainPostingKey(user, 'HiveClash — Sign in')
       .then(() => {
         setUsername(user);
+        try {
+          localStorage.setItem(HIVECLASH_USER_KEY, user);
+        } catch {
+          /* ignore */
+        }
         setIsLoginModalOpen(false);
         addLog(`@${user} authenticated via Hive Keychain`);
         setLoginInput('');
@@ -212,6 +237,11 @@ export default function App() {
 
   const handleLogout = () => {
     setUsername('');
+    try {
+      localStorage.removeItem(HIVECLASH_USER_KEY);
+    } catch {
+      /* ignore */
+    }
     addLog(`User logged out.`);
   };
 
