@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
 import { stakePrizeToBank, HIVE_BANK_ACCOUNT } from './hiveKeychainBank';
 import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
@@ -46,6 +46,7 @@ const normalizeHostQuiz = (questions) =>
   }));
 
 const HIVECLASH_USER_KEY = 'hiveclash.hiveUsername';
+const JOIN_PIN_SESSION_KEY = 'hiveclash.pendingJoinPin';
 
 /** Join links follow whatever host opened the app (Railway, future hiveclash.app, localhost). */
 const getJoinGameUrl = (pin) =>
@@ -175,6 +176,9 @@ export default function App() {
   const [keychainInstalled, setKeychainInstalled] = useState(null);
   const [isStakingPrize, setIsStakingPrize] = useState(false);
 
+  /** PIN from /join/:pin — cleared after we attempt join (room must exist in `games` on this device). */
+  const joinPinFromUrlRef = useRef(null);
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(HIVECLASH_USER_KEY);
@@ -195,6 +199,27 @@ export default function App() {
     void import('@hiveio/dhive');
     return () => clearTimeout(retry);
   }, [isLoginModalOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const m = window.location.pathname.match(/^\/join\/([^/]+)\/?$/);
+    if (m) {
+      try {
+        sessionStorage.setItem(JOIN_PIN_SESSION_KEY, m[1]);
+      } catch {
+        /* private mode */
+      }
+      joinPinFromUrlRef.current = m[1];
+      window.history.replaceState(null, '', '/');
+    } else {
+      try {
+        const stored = sessionStorage.getItem(JOIN_PIN_SESSION_KEY);
+        if (stored) joinPinFromUrlRef.current = stored;
+      } catch {
+        /* ignore */
+      }
+    }
+  }, []);
 
   // --- LOGIC ---
   const addLog = (message) => {
@@ -275,6 +300,35 @@ export default function App() {
     addLog(`@${username} signed transfer of 1 HIVE to join game ${game.id}.`);
     setGameState('waitingRoom');
   };
+
+  useEffect(() => {
+    const pin = joinPinFromUrlRef.current;
+    if (!pin) return;
+    if (!username.trim()) {
+      setIsLoginModalOpen(true);
+      return;
+    }
+    const game = games.find((g) => g.id === pin && g.status === 'live');
+    if (game) {
+      joinLiveGame(game);
+      joinPinFromUrlRef.current = null;
+      try {
+        sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    triggerNotification(
+      'No live room for this PIN on this device. Open the link on a browser that lists that game, or use Live Games when the room is published to the chain.',
+    );
+    joinPinFromUrlRef.current = null;
+    try {
+      sessionStorage.removeItem(JOIN_PIN_SESSION_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, [username, games]);
 
   const toggleInterest = (gameId) => {
     if (!username.trim()) {
@@ -363,6 +417,19 @@ export default function App() {
           addLog(`@${username} scheduled game ${newId} for ${scheduleDate} ${scheduleTime}.`);
           setGameState('dashboard');
         } else {
+          const newGame = {
+            id: newId,
+            status: 'live',
+            host: username,
+            title: hostGameTitle,
+            prize: hostFunding,
+            players: 0,
+            maxPlayers: 50,
+            interested: [],
+            image: hostImageUrl || DEFAULT_IMAGE,
+            questions: normalizedQuiz,
+          };
+          setGames((prev) => [...prev, newGame]);
           setGameId(newId);
           setPrizePool(hostFunding);
           setViewMode('host');
