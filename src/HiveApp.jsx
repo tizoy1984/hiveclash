@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { loginWithHiveKeychainPostingKey } from './hiveKeychainLogin';
 import { stakePrizeToBank, HIVE_BANK_ACCOUNT } from './hiveKeychainBank';
 import {
@@ -187,6 +187,21 @@ export default function App() {
   // UI Theme State
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isMyRoomsOpen, setIsMyRoomsOpen] = useState(false);
+
+  const myHostedGames = useMemo(() => {
+    if (!username) return [];
+    const mine = games.filter((g) => g.host === username);
+    const rank = (s) => (s === 'live' ? 0 : 1);
+    return [...mine].sort((a, b) => {
+      const dr = rank(a.status) - rank(b.status);
+      if (dr !== 0) return dr;
+      const na = Number(a.id);
+      const nb = Number(b.id);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return nb - na;
+      return String(b.id).localeCompare(String(a.id), 'en');
+    });
+  }, [games, username]);
 
   // Host Setup State
   const [hostFunding, setHostFunding] = useState(50);
@@ -595,6 +610,80 @@ export default function App() {
     document.body.removeChild(textArea);
   };
 
+  const copyRoomLink = (pin) => {
+    const url = getJoinGameUrl(pin);
+    try {
+      void navigator.clipboard?.writeText(url);
+      triggerNotification('Join link copied.');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+        triggerNotification('Join link copied.');
+      } catch {
+        triggerNotification('Could not copy link.');
+      }
+      document.body.removeChild(ta);
+    }
+  };
+
+  const resumeHostedRoom = (room) => {
+    if (!username || room.host !== username || room.status !== 'live') return;
+    setGameId(room.id);
+    setPrizePool(Number(room.prize) || 0);
+    setActiveQuiz(
+      (room.questions?.length ? room.questions : DEFAULT_DEMO_QUESTIONS).map((q, i) => ({
+        ...q,
+        id: q.id ?? i + 1,
+      })),
+    );
+    setCurrentQIndex(0);
+    setSelectedAnswer(null);
+    setScore(0);
+    setStreak(0);
+    setPlayers([]);
+    setActiveSessionRole('host');
+    setGameState('waitingRoom');
+    setIsMyRoomsOpen(false);
+    addLog(`Opened host view for room ${room.id}.`);
+  };
+
+  const deleteHostedRoom = (room) => {
+    if (!username || room.host !== username) return;
+    if (BUILTIN_GAME_IDS.has(room.id)) {
+      triggerNotification('Built-in demo listings cannot be deleted.');
+      return;
+    }
+    if (
+      !window.confirm(
+        `Remove “${room.title}” (PIN ${room.id})? It disappears from Live / Upcoming here and from the cloud list; this does not reverse the HIVE already sent to @${HIVE_BANK_ACCOUNT}.`,
+      )
+    ) {
+      return;
+    }
+    void deleteLiveRoom(room.id);
+    setGames((prev) => prev.filter((g) => g.id !== room.id));
+    if (gameId === room.id) {
+      setGameId('');
+      setActiveQuiz([]);
+      setPlayers([]);
+      setActiveSessionRole(null);
+      setPrizePool(0);
+      setScore(0);
+      setStreak(0);
+      setCurrentQIndex(0);
+      setSelectedAnswer(null);
+      if (['waitingRoom', 'playing', 'revealing', 'leaderboard'].includes(gameState)) {
+        setGameState('dashboard');
+      }
+    }
+    addLog(`@${username} removed room ${room.id} from the app list.`);
+    triggerNotification(`Room ${room.id} removed.`);
+  };
+
   // Timer Countdown
   useEffect(() => {
     let timer;
@@ -729,6 +818,19 @@ export default function App() {
                       {isDarkMode ? <Sun size={18} className="mr-3 text-amber-500"/> : <Moon size={18} className="mr-3 text-indigo-500"/>}
                       {isDarkMode ? 'Light Mode' : 'Dark Mode'}
                     </button>
+                    {username && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMyRoomsOpen(true);
+                          setIsMenuOpen(false);
+                        }}
+                        className="w-full text-left px-4 py-3 hover:bg-gray-50 dark:hover:bg-white/5 text-slate-800 dark:text-white flex items-center font-bold transition-colors border-t border-gray-100 dark:border-white/10"
+                      >
+                        <ListOrdered size={18} className="mr-3 text-cyan-600 dark:text-cyan-400 shrink-0" />
+                        My rooms
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1730,6 +1832,119 @@ export default function App() {
           <div className="fixed top-24 left-1/2 transform -translate-x-1/2 bg-rose-600 text-white px-5 sm:px-6 py-3 rounded-full shadow-xl dark:shadow-[0_0_30px_rgba(225,29,72,0.6)] z-50 flex items-center font-bold animate-pulse text-center w-max max-w-[90vw] text-sm sm:text-base border border-rose-400">
             <AlertCircle className="mr-2 shrink-0" size={20} />
             {notification}
+          </div>
+        )}
+
+        {username && (
+          <button
+            type="button"
+            onClick={() => setIsMyRoomsOpen(true)}
+            className="fixed top-[4.5rem] sm:top-20 right-3 sm:right-4 z-[55] flex items-center gap-2 px-3 sm:px-4 py-2 rounded-full font-bold text-sm bg-white/95 dark:bg-zinc-900/95 border border-gray-200 dark:border-white/15 text-slate-800 dark:text-white shadow-lg hover:border-cyan-400 dark:hover:border-cyan-500/50 transition-colors"
+            title="Rooms you created"
+          >
+            <ListOrdered size={18} className="text-cyan-600 dark:text-cyan-400 shrink-0" />
+            <span className="hidden sm:inline max-w-[7rem] truncate">My rooms</span>
+          </button>
+        )}
+
+        {isMyRoomsOpen && username && (
+          <div className="fixed inset-0 z-[60] flex justify-end">
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+              aria-label="Close my rooms"
+              onClick={() => setIsMyRoomsOpen(false)}
+            />
+            <div className="relative w-full max-w-md h-full sm:h-auto sm:max-h-[90vh] sm:my-auto sm:mr-4 bg-white dark:bg-zinc-900 border-l sm:border border-gray-200 dark:border-white/10 shadow-2xl flex flex-col sm:rounded-2xl overflow-hidden animate-fade-in-up">
+              <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 dark:border-white/10 shrink-0">
+                <h2 className="text-lg font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <ListOrdered className="text-cyan-600 dark:text-cyan-400" size={22} />
+                  My rooms
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => setIsMyRoomsOpen(false)}
+                  className="p-2 rounded-full text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 dark:text-gray-400"
+                  aria-label="Close"
+                >
+                  <XCircle size={26} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                {myHostedGames.length === 0 ? (
+                  <p className="text-center text-slate-500 dark:text-gray-400 font-medium py-12 px-2">
+                    You have not created a room yet. Use <span className="font-bold text-fuchsia-600 dark:text-fuchsia-400">Host Game</span> to stake and publish one.
+                  </p>
+                ) : (
+                  myHostedGames.map((room) => {
+                    const isLive = room.status === 'live';
+                    const canDelete = !BUILTIN_GAME_IDS.has(room.id);
+                    return (
+                      <div
+                        key={room.id}
+                        className="rounded-2xl border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 p-4 space-y-3"
+                      >
+                        <div className="flex justify-between gap-2 items-start">
+                          <div>
+                            <span
+                              className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                                isLive
+                                  ? 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
+                                  : 'bg-fuchsia-500/15 text-fuchsia-600 dark:text-fuchsia-400'
+                              }`}
+                            >
+                              {isLive ? 'Live' : 'Scheduled'}
+                            </span>
+                            <h3 className="font-black text-slate-900 dark:text-white mt-2 leading-tight">{room.title}</h3>
+                            <p className="text-xs font-mono text-slate-500 dark:text-gray-400 mt-1">
+                              PIN {room.id} · {room.prize} HIVE
+                            </p>
+                            {!isLive && room.date && (
+                              <p className="text-xs text-slate-600 dark:text-gray-400 mt-1">
+                                {new Date(room.date).toLocaleDateString()} · {room.time}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {isLive && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => copyRoomLink(room.id)}
+                                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-white dark:bg-white/10 border border-gray-200 dark:border-white/10 text-slate-800 dark:text-white hover:border-cyan-400"
+                              >
+                                <Copy size={14} /> Copy link
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => resumeHostedRoom(room)}
+                                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold bg-cyan-600 text-white hover:bg-cyan-500"
+                              >
+                                <MonitorPlay size={14} /> Host view
+                              </button>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => deleteHostedRoom(room)}
+                            disabled={!canDelete}
+                            title={canDelete ? 'Remove from your list' : 'Demo games cannot be removed'}
+                            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold border ${
+                              canDelete
+                                ? 'bg-rose-50 dark:bg-rose-500/10 border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/20'
+                                : 'opacity-40 cursor-not-allowed border-gray-200 dark:border-white/10 text-gray-400'
+                            }`}
+                          >
+                            <Trash2 size={14} /> Delete
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
           </div>
         )}
 
