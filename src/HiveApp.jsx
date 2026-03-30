@@ -9,7 +9,7 @@ import {
   subscribeLiveRooms,
   upsertLiveRoom,
 } from './roomSync';
-import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Smartphone, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
+import { Triangle, Hexagon, Circle, Square, Trophy, User, Clock, CheckCircle2, XCircle, Activity, Flame, Coins, Medal, MonitorPlay, Twitter, Users, Play, Copy, Check, Globe, Plus, ChevronLeft, AlertCircle, Key, LogOut, Loader2, Calendar, Bell, Sparkles, Menu, Sun, Moon, Image as ImageIcon, ExternalLink, Trash2, ListOrdered } from 'lucide-react';
 
 // --- MOCK DATA & CONFIG ---
 const DEFAULT_DEMO_QUESTIONS = [
@@ -175,7 +175,9 @@ export default function App() {
   const [games, setGames] = useState(() => mergeBuiltinAndStoredGames());
   const gamesRef = useRef(games);
   gamesRef.current = games;
-  const [viewMode, setViewMode] = useState('player'); // 'host' or 'player'
+  /** Set when entering a live room: host (created) vs player (joined). No tester toggle. */
+  const [activeSessionRole, setActiveSessionRole] = useState(null);
+  const isHostView = activeSessionRole === 'host';
   const [prizePool, setPrizePool] = useState(0);
   const [players, setPlayers] = useState([]); // Users in the waiting room
   const [copiedLink, setCopiedLink] = useState(false);
@@ -215,6 +217,16 @@ export default function App() {
       /* private mode */
     }
   }, [games]);
+
+  /** After refresh, recover host vs player from room metadata (no tester toggle). */
+  useEffect(() => {
+    if (activeSessionRole !== null) return;
+    if (!gameId || !username.trim()) return;
+    if (!['waitingRoom', 'playing', 'revealing', 'leaderboard'].includes(gameState)) return;
+    const g = games.find((x) => x.id === gameId);
+    if (!g) return;
+    setActiveSessionRole(g.host === username ? 'host' : 'player');
+  }, [activeSessionRole, gameId, username, games, gameState]);
 
   useEffect(() => {
     if (!isLiveRoomCloudSyncEnabled()) return;
@@ -343,7 +355,7 @@ export default function App() {
     }
     setGameId(game.id);
     setPrizePool(game.prize + 1); // Mock adding buy-in
-    setViewMode('player');
+    setActiveSessionRole('player');
     setActiveQuiz(
       (game.questions?.length ? game.questions : DEFAULT_DEMO_QUESTIONS).map((q, i) => ({
         ...q,
@@ -524,7 +536,7 @@ export default function App() {
           void upsertLiveRoom(newGame);
           setGameId(newId);
           setPrizePool(hostFunding);
-          setViewMode('host');
+          setActiveSessionRole('host');
           setPlayers([]);
           setActiveQuiz(normalizedQuiz);
           setCurrentQIndex(0);
@@ -555,7 +567,7 @@ export default function App() {
   };
 
   const handleAnswer = (index) => {
-    if (selectedAnswer !== null || gameState !== 'playing' || viewMode === 'host') return;
+    if (selectedAnswer !== null || gameState !== 'playing' || activeSessionRole === 'host') return;
     
     setSelectedAnswer(index);
     addLog(`@${username} broadcasted 'custom_json' (Choice ${index})`);
@@ -1240,7 +1252,6 @@ export default function App() {
   );
 
   const renderWaitingRoom = () => {
-    const isHostView = viewMode === 'host';
     const gameUrl = getJoinGameUrl(gameId);
     const formattedId = gameId ? `${gameId.slice(0,3)} ${gameId.slice(3,6)}` : '000 000';
 
@@ -1249,17 +1260,7 @@ export default function App() {
         {/* Decorative Grid Background */}
         <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-5 mix-blend-overlay pointer-events-none"></div>
 
-        {/* Toggle View Mode Buttons */}
-        <div className="absolute top-2 sm:top-6 left-1/2 transform -translate-x-1/2 flex space-x-1 sm:space-x-2 bg-white/80 dark:bg-white/5 p-1.5 rounded-full backdrop-blur-md z-20 border border-gray-200 dark:border-white/10 w-max shadow-sm">
-          <button onClick={() => setViewMode('host')} className={`px-4 sm:px-6 py-2 rounded-full text-xs sm:text-sm font-bold flex items-center transition-all ${isHostView ? 'bg-cyan-500 text-white shadow-md dark:shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'}`}>
-            <MonitorPlay size={16} className="mr-2" /> Host TV
-          </button>
-          <button onClick={() => setViewMode('player')} className={`px-4 sm:px-6 py-2 rounded-full text-xs sm:text-sm font-bold flex items-center transition-all ${!isHostView ? 'bg-fuchsia-500 text-white shadow-md dark:shadow-[0_0_10px_rgba(217,70,239,0.5)]' : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'}`}>
-            <Smartphone size={16} className="mr-2" /> Player Phone
-          </button>
-        </div>
-
-        <div className="absolute top-[3.25rem] sm:top-[4.5rem] left-1/2 transform -translate-x-1/2 z-20 flex flex-col items-center gap-2 max-w-[95vw]">
+        <div className="absolute top-2 sm:top-6 left-1/2 transform -translate-x-1/2 z-20 flex flex-col items-center gap-2 max-w-[95vw]">
           <button
             type="button"
             onClick={() => setGameState('dashboard')}
@@ -1283,7 +1284,7 @@ export default function App() {
         </div>
 
         {isHostView ? (
-          <div className="flex-1 flex flex-col mt-28 sm:mt-32 max-w-7xl mx-auto w-full z-10">
+          <div className="flex-1 flex flex-col mt-24 sm:mt-28 max-w-7xl mx-auto w-full z-10">
             <div className="flex flex-col lg:flex-row justify-between items-center bg-white dark:bg-zinc-900/60 backdrop-blur-xl p-6 sm:p-10 rounded-3xl shadow-2xl dark:shadow-[0_0_40px_rgba(6,182,212,0.1)] border border-gray-200 dark:border-cyan-500/20 gap-8 relative overflow-hidden">
               <div className="absolute -right-20 -top-20 w-64 h-64 bg-cyan-500/10 blur-[60px] rounded-full pointer-events-none hidden dark:block"></div>
               
@@ -1361,7 +1362,7 @@ export default function App() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center text-center z-10 mt-28 sm:mt-32">
+          <div className="flex-1 flex flex-col items-center justify-center text-center z-10 mt-24 sm:mt-28">
             <div className="bg-white dark:bg-zinc-900/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 p-10 rounded-3xl shadow-2xl dark:shadow-[0_0_50px_rgba(217,70,239,0.15)] max-w-sm w-full transform hover:scale-105 transition-transform duration-500 relative overflow-hidden">
                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-cyan-500 via-fuchsia-500 to-amber-500"></div>
               
@@ -1377,10 +1378,6 @@ export default function App() {
               <Activity className="mb-3" size={32} />
               Awaiting host to start the game...
             </div>
-            {/* Fallback button for testing if joined as player */}
-            <button onClick={beginTrivia} className="mt-12 text-sm text-gray-500 dark:text-gray-600 hover:text-slate-900 dark:hover:text-white border border-gray-300 dark:border-gray-800 hover:border-gray-400 dark:hover:border-white/20 px-5 py-2.5 rounded-full transition-all">
-              (Dev Test) Force Start
-            </button>
           </div>
         )}
       </div>
@@ -1396,7 +1393,6 @@ export default function App() {
         </div>
       );
     }
-    const isHostView = viewMode === 'host';
     const isBoolean = q.type === 'boolean';
     const options = q.options;
     const colors = isBoolean ? BOOL_COLORS : COLORS;
@@ -1406,18 +1402,8 @@ export default function App() {
     return (
       <div className="flex flex-col min-h-screen p-4 sm:p-8 bg-slate-50 dark:bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] dark:from-zinc-900 dark:via-black dark:to-black text-slate-900 dark:text-white relative overflow-hidden transition-colors duration-500">
         
-        {/* Toggle View Mode Buttons */}
-        <div className="absolute top-2 sm:top-6 left-1/2 transform -translate-x-1/2 flex space-x-1 sm:space-x-2 bg-white/80 dark:bg-white/5 p-1.5 rounded-full backdrop-blur-md z-20 border border-gray-200 dark:border-white/10 w-max shadow-sm">
-          <button onClick={() => setViewMode('host')} className={`px-3 sm:px-6 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-bold flex items-center transition-all ${isHostView ? 'bg-cyan-500 text-white shadow-md dark:shadow-[0_0_10px_rgba(6,182,212,0.5)]' : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'}`}>
-            <MonitorPlay size={14} className="mr-1 sm:mr-2" /> Host TV
-          </button>
-          <button onClick={() => setViewMode('player')} className={`px-3 sm:px-6 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-bold flex items-center transition-all ${!isHostView ? 'bg-fuchsia-500 text-white shadow-md dark:shadow-[0_0_10px_rgba(217,70,239,0.5)]' : 'text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white'}`}>
-            <Smartphone size={14} className="mr-1 sm:mr-2" /> Player Phone
-          </button>
-        </div>
-
-        {/* Header - Changes based on view */}
-        <div className="flex justify-between items-center mt-12 sm:mt-16 mb-6 sm:mb-10 p-3 sm:p-5 rounded-2xl bg-white/90 dark:bg-zinc-900/60 backdrop-blur-md border border-gray-200 dark:border-white/10 shadow-lg relative z-10">
+        {/* Header — host shows big-screen PIN; players show their profile & score */}
+        <div className="flex justify-between items-center mt-6 sm:mt-10 mb-6 sm:mb-10 p-3 sm:p-5 rounded-2xl bg-white/90 dark:bg-zinc-900/60 backdrop-blur-md border border-gray-200 dark:border-white/10 shadow-lg relative z-10">
           {!isHostView ? (
              <div className="flex items-center space-x-2 sm:space-x-4 font-bold text-lg sm:text-xl">
                <img src={`https://images.hive.blog/u/${username}/avatar`} alt="avatar" className="w-10 h-10 sm:w-14 sm:h-14 rounded-full border-2 border-fuchsia-500 shadow-md dark:shadow-[0_0_10px_rgba(217,70,239,0.5)] bg-gray-100 dark:bg-zinc-800" onError={(e) => { e.target.onerror = null; e.target.src = "https://images.hive.blog/u/hiveio/avatar"; }}/>
@@ -1648,7 +1634,7 @@ export default function App() {
               setSelectedAnswer(null);
               setLogs([]);
               setPlayers([]);
-              setViewMode('player');
+              setActiveSessionRole(null);
               setGameId('');
               setActiveQuiz([]);
             }}
@@ -1755,7 +1741,7 @@ export default function App() {
         {gameState === 'leaderboard' && renderLeaderboard()}
 
         {gameId &&
-          viewMode === 'host' &&
+          isHostView &&
           activeQuiz.length > 0 &&
           (gameState === 'dashboard' || gameState === 'hostSetup') && (
             <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[95vw] max-w-md">
