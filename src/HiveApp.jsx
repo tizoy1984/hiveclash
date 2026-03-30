@@ -1835,18 +1835,6 @@ export default function App() {
           </div>
         )}
 
-        {username && (
-          <button
-            type="button"
-            onClick={() => setIsMyRoomsOpen(true)}
-            className="fixed top-[4.5rem] sm:top-20 right-3 sm:right-4 z-[55] flex items-center gap-2 px-3 sm:px-4 py-2 rounded-full font-bold text-sm bg-white/95 dark:bg-zinc-900/95 border border-gray-200 dark:border-white/15 text-slate-800 dark:text-white shadow-lg hover:border-cyan-400 dark:hover:border-cyan-500/50 transition-colors"
-            title="Rooms you created"
-          >
-            <ListOrdered size={18} className="text-cyan-600 dark:text-cyan-400 shrink-0" />
-            <span className="hidden sm:inline max-w-[7rem] truncate">My rooms</span>
-          </button>
-        )}
-
         {isMyRoomsOpen && username && (
           <div className="fixed inset-0 z-[60] flex justify-end">
             <button
